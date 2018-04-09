@@ -30,6 +30,7 @@
 
 #include "server.h"
 
+#include <sys/stat.h>
 /* ----------------- Blocking sockets I/O with timeouts --------------------- */
 
 /* Redis performs most of the I/O in a nonblocking way, with the exception
@@ -58,7 +59,7 @@ ssize_t syncWrite(int fd, char *ptr, ssize_t size, long long timeout) {
 
         /* Optimistically try to write before checking if the file descriptor
          * is actually writable. At worst we get EAGAIN. */
-        nwritten = write(fd,ptr,size);
+        nwritten = rwrite(fd,ptr,size);
         if (nwritten == -1) {
             if (errno != EAGAIN) return -1;
         } else {
@@ -78,11 +79,19 @@ ssize_t syncWrite(int fd, char *ptr, ssize_t size, long long timeout) {
     }
 }
 
+#ifdef BUILD_SSL
+int isFdSocket(int fd) {
+    struct stat statbuf;
+    fstat(fd, &statbuf);
+    return S_ISSOCK(statbuf.st_mode);
+}
+#endif
+
 /* Read the specified amount of bytes from 'fd'. If all the bytes are read
  * within 'timeout' milliseconds the operation succeed and 'size' is returned.
  * Otherwise the operation fails, -1 is returned, and an unspecified amount of
  * data could be read from the file descriptor. */
-ssize_t syncRead(int fd, char *ptr, ssize_t size, long long timeout) {
+ssize_t syncRead(int fd, char *ptr, ssize_t size, long long timeout) {    
     ssize_t nread, totread = 0;
     long long start = mstime();
     long long remaining = timeout;
@@ -95,7 +104,16 @@ ssize_t syncRead(int fd, char *ptr, ssize_t size, long long timeout) {
 
         /* Optimistically try to read before checking if the file descriptor
          * is actually readable. At worst we get EAGAIN. */
-        nread = read(fd,ptr,size);
+#ifdef BUILD_SSL
+        // Only use SSL if reading from a socket
+        if (isFdSocket(fd)) {
+            nread = rread(fd,ptr,size);
+        } else {
+            nread = read(fd,ptr,size);
+        }
+        #else
+        nread = rread(fd,ptr,size);
+#endif
         if (nread == 0) return -1; /* short read. */
         if (nread == -1) {
             if (errno != EAGAIN) return -1;
