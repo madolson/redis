@@ -66,6 +66,9 @@ typedef long long mstime_t; /* millisecond time type. */
 #include "quicklist.h"  /* Lists are encoded as linked lists of
                            N-elements flat arrays */
 #include "rax.h"     /* Radix tree */
+#ifdef BUILD_SSL
+#include "ssl.h"
+#endif
 
 /* Following includes allow test functions to be called from Redis main() */
 #include "zipmap.h"
@@ -146,6 +149,7 @@ typedef long long mstime_t; /* millisecond time type. */
 #define CONFIG_DEFAULT_MIN_SLAVES_MAX_LAG 10
 #define NET_IP_STR_LEN 46 /* INET6_ADDRSTRLEN is 46, but we need to be sure */
 #define NET_PEER_ID_LEN (NET_IP_STR_LEN+32) /* Must be enough for ip:port */
+#define DNS_NAME_STR_LEN 256 /* According to RFC 1035 the length of a FQDN is limited to 255 characters (plus 1 for null termination) */
 #define CONFIG_BINDADDR_MAX 16
 #define CONFIG_MIN_RESERVED_FDS 32
 #define CONFIG_DEFAULT_LATENCY_MONITOR_THRESHOLD 0
@@ -291,6 +295,9 @@ typedef long long mstime_t; /* millisecond time type. */
 #define REPL_STATE_RECEIVE_CAPA 11 /* Wait for REPLCONF reply */
 #define REPL_STATE_SEND_PSYNC 12 /* Send PSYNC */
 #define REPL_STATE_RECEIVE_PSYNC 13 /* Wait for PSYNC reply */
+#ifdef BUILD_SSL
+#define REPL_STATE_SSL_HANDSHAKE 999 /* Waiting in SSL handshake */
+#endif
 /* --- End of handshake states --- */
 #define REPL_STATE_TRANSFER 14 /* Receiving .rdb from master */
 #define REPL_STATE_CONNECTED 15 /* Connected to master */
@@ -444,6 +451,24 @@ typedef long long mstime_t; /* millisecond time type. */
 #define serverAssert(_e) ((_e)?(void)0 : (_serverAssert(#_e,__FILE__,__LINE__),_exit(1)))
 #define serverPanic(...) _serverPanic(__FILE__,__LINE__,__VA_ARGS__),_exit(1)
 
+/* Macros to override I/O calls with ssl calls */
+#ifdef BUILD_SSL
+#define rstrerror(errno) sslstrerror()
+#define rread(fd, buffer, bytes) sslRead((fd), (buffer), (bytes))
+#define rwrite(fd, buffer, bytes) sslWrite((fd), (buffer), (bytes))
+#define rping(fd) sslPing((fd));
+#define rclose(fd) if(server.ssl_config.enable_ssl == true) {\
+    cleanupSslConnectionForFd((fd));\
+}\
+close((fd))
+#else
+#define rstrerror(errno) strerror(errno)
+#define rread(fd, buffer, bytes) read((fd), (buffer), (bytes))
+#define rwrite(fd, buffer, bytes) write((fd), (buffer), (bytes))
+#define rping(fd) write((fd), "\n", 1)
+#define rclose(fd) close((fd))
+#endif
+
 /*-----------------------------------------------------------------------------
  * Data types
  *----------------------------------------------------------------------------*/
@@ -476,6 +501,8 @@ typedef long long mstime_t; /* millisecond time type. */
 #define REDISMODULE_TYPE_ENCVER_MASK ((1<<REDISMODULE_TYPE_ENCVER_BITS)-1)
 #define REDISMODULE_TYPE_ENCVER(id) (id & REDISMODULE_TYPE_ENCVER_MASK)
 #define REDISMODULE_TYPE_SIGN(id) ((id & ~((uint64_t)REDISMODULE_TYPE_ENCVER_MASK)) >>REDISMODULE_TYPE_ENCVER_BITS)
+
+typedef enum {CLUSTER_INTERFACE_TYPE_NONE = -1, CLUSTER_INTERFACE_TYPE_IP, CLUSTER_INTERFACE_TYPE_DNS} cluster_interface_type;
 
 struct RedisModule;
 struct RedisModuleIO;
@@ -1237,6 +1264,14 @@ struct redisServer {
     pthread_mutex_t lruclock_mutex;
     pthread_mutex_t next_client_id_mutex;
     pthread_mutex_t unixtime_mutex;
+
+    struct rdbSaveInfo * master_replication_rdb_save_info; /* Used to store the save info for after ssl handshake */
+
+    char *cluster_announce_endpoint; /* Endpoint address to announce on cluster bus, only for ssl enabled */
+    cluster_interface_type client_cluster_interface_type; /* Which endpoint to show to clients, only for ssl enabled */
+#ifdef BUILD_SSL
+    ssl_t ssl_config; /* SSL configuration */
+#endif
 };
 
 typedef struct pubsubPattern {
@@ -1865,6 +1900,12 @@ void dictSdsDestructor(void *privdata, void *val);
 char *redisGitSHA1(void);
 char *redisGitDirty(void);
 uint64_t redisBuildId(void);
+
+/* functions exposed to ssl.h if compiled with SSL*/
+int cancelReplicationHandshake(void);
+void finishSyncAfterReceivingBulkPayloadOnSlave(void);
+
+
 
 /* Commands prototypes */
 void authCommand(client *c);

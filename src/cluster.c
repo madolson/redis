@@ -31,6 +31,9 @@
 #include "server.h"
 #include "cluster.h"
 #include "endianconv.h"
+#ifdef BUILD_SSL
+#include "ssl.h"
+#endif
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -49,13 +52,12 @@ clusterNode *myself = NULL;
 clusterNode *createClusterNode(char *nodename, int flags);
 int clusterAddNode(clusterNode *node);
 void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask);
-void clusterReadHandler(aeEventLoop *el, int fd, void *privdata, int mask);
 void clusterSendPing(clusterLink *link, int type);
 void clusterSendFail(char *nodename);
 void clusterSendFailoverAuthIfNeeded(clusterNode *node, clusterMsg *request);
 void clusterUpdateState(void);
 int clusterNodeGetSlotBit(clusterNode *n, int slot);
-sds clusterGenNodesDescription(int filter);
+sds clusterGenNodesDescription(int filter, int internalUse);
 clusterNode *clusterLookupNode(const char *name);
 int clusterNodeAddSlave(clusterNode *master, clusterNode *slave);
 int clusterAddSlot(clusterNode *n, int slot);
@@ -80,6 +82,15 @@ void moduleCallClusterReceivers(const char *sender_id, uint64_t module_id, uint8
 /* -----------------------------------------------------------------------------
  * Initialization
  * -------------------------------------------------------------------------- */
+
+/**
+ * Converts cluster_interface_type str to corresponding enum
+ */
+int parseClusterInterfaceType(char *typeString) {
+    if(!strcasecmp(typeString, "ip")) return CLUSTER_INTERFACE_TYPE_IP;
+    else if(!strcasecmp(typeString, "dns")) return CLUSTER_INTERFACE_TYPE_DNS;
+    else return CLUSTER_INTERFACE_TYPE_NONE;
+}
 
 /* Load the cluster config from 'filename'.
  *
@@ -169,11 +180,22 @@ int clusterLoadConfig(char *filename) {
         *p = '\0';
         memcpy(n->ip,argv[1],strlen(argv[1])+1);
         char *port = p+1;
+#ifdef BUILD_SSL
+        char *endpoint = strchr(port, ',');
+#endif
         char *busp = strchr(port,'@');
         if (busp) {
             *busp = '\0';
             busp++;
         }
+
+#ifdef BUILD_SSL
+        /* data-endpoint, required but can be an empty string */
+        *endpoint = '\0';
+        endpoint = endpoint + 1;
+        strcpy(n->endpoint, endpoint);
+#endif
+
         n->port = atoi(port);
         /* In older versions of nodes.conf the "@busport" part is missing.
          * In this case we set it to the default offset of 10000 from the
@@ -319,7 +341,7 @@ int clusterSaveConfig(int do_fsync) {
 
     /* Get the nodes description and concatenate our "vars" directive to
      * save currentEpoch and lastVoteEpoch. */
-    ci = clusterGenNodesDescription(CLUSTER_NODE_HANDSHAKE);
+    ci = clusterGenNodesDescription(CLUSTER_NODE_HANDSHAKE, true);
     ci = sdscatprintf(ci,"vars currentEpoch %llu lastVoteEpoch %llu\n",
         (unsigned long long) server.cluster->currentEpoch,
         (unsigned long long) server.cluster->lastVoteEpoch);
@@ -602,6 +624,14 @@ clusterLink *createClusterLink(clusterNode *node) {
 void freeClusterLink(clusterLink *link) {
     if (link->fd != -1) {
         aeDeleteFileEvent(server.el, link->fd, AE_READABLE|AE_WRITABLE);
+#ifdef BUILD_SSL
+        if(server.ssl_config.enable_ssl == true){
+            serverAssert((unsigned int)link->fd < server.ssl_config.fd_to_sslconn_size);
+            if(server.ssl_config.fd_to_sslconn[link->fd] != NULL){
+                cleanupSslConnectionForFd(link->fd);
+            }
+        }
+#endif
     }
     sdsfree(link->sndbuf);
     sdsfree(link->rcvbuf);
@@ -645,7 +675,22 @@ void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
          * node identity. */
         link = createClusterLink(NULL);
         link->fd = cfd;
-        aeCreateFileEvent(server.el,cfd,AE_READABLE,clusterReadHandler,link);
+        do {
+#ifdef BUILD_SSL
+            if (server.ssl_config.enable_ssl == true) {
+                serverLog(LL_DEBUG, "Initializing SSL connection for cluster node %s:%d", cip, cport);
+                if (initSslConnection(S2N_SERVER, server.ssl_config.server_ssl_config, cfd, SSL_PERFORMANCE_MODE_LOW_LATENCY, NULL,
+                                server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
+                    serverLog(LL_WARNING, "Error initializing ssl connection for cluster node %s:%d", cip, cport);
+                    freeClusterLink(link);
+                    return;
+                }
+                aeCreateFileEvent(server.el, cfd, AE_READABLE | AE_WRITABLE, sslNegotiateWithClusterNodeAsServer, link);
+                break;
+            }
+#endif
+            aeCreateFileEvent(server.el, cfd, AE_READABLE, clusterReadHandler, link);
+        } while (0);
     }
 }
 
@@ -710,6 +755,9 @@ clusterNode *createClusterNode(char *nodename, int flags) {
     node->fail_time = 0;
     node->link = NULL;
     memset(node->ip,0,sizeof(node->ip));
+#ifdef BUILD_SSL
+    memset(node->endpoint, 0, sizeof(node->endpoint));
+#endif
     node->port = 0;
     node->cport = 0;
     node->fail_reports = listCreate();
@@ -1347,12 +1395,22 @@ void clusterProcessGossipSection(clusterMsg *hdr, clusterLink *link) {
 
         if (server.verbosity == LL_DEBUG) {
             ci = representClusterNodeFlags(sdsempty(), flags);
-            serverLog(LL_DEBUG,"GOSSIP %.40s %s:%d@%d %s",
+#ifdef BUILD_SSL
+            serverLog(LL_DEBUG,"GOSSIP %.40s %s:%d@%d %s %s",
+                g->nodename,
+                g->ip,
+                ntohs(g->port),
+                ntohs(g->cport),
+                ci,
+                sender ? sender->endpoint : "");
+#else
+                serverLog(LL_DEBUG,"GOSSIP %.40s %s:%d@%d %s",
                 g->nodename,
                 g->ip,
                 ntohs(g->port),
                 ntohs(g->cport),
                 ci);
+#endif
             sdsfree(ci);
         }
 
@@ -1414,6 +1472,9 @@ void clusterProcessGossipSection(clusterMsg *hdr, clusterLink *link) {
             {
                 if (node->link) freeClusterLink(node->link);
                 memcpy(node->ip,g->ip,NET_IP_STR_LEN);
+#ifdef BUILD_SSL
+                memcpy(node->endpoint,g->endpoint,DNS_NAME_STR_LEN);
+#endif
                 node->port = ntohs(g->port);
                 node->cport = ntohs(g->cport);
                 node->flags &= ~CLUSTER_NODE_NOADDR;
@@ -1451,7 +1512,7 @@ void nodeIp2String(char *buf, clusterLink *link, char *announced_ip) {
 }
 
 /* Update the node address to the IP address that can be extracted
- * from link->fd, or if hdr->myip is non empty, to the address the node
+ * from link->fd, or if hdr->myip (or hdr->endpoint if SSL) is non empty, to the address the node
  * is announcing us. The port is taken from the packet header as well.
  *
  * If the address or port changed, disconnect the node link so that we'll
@@ -1466,6 +1527,9 @@ int nodeUpdateAddressIfNeeded(clusterNode *node, clusterLink *link,
                               clusterMsg *hdr)
 {
     char ip[NET_IP_STR_LEN] = {0};
+#ifdef BUILD_SSL
+    char endpoint[DNS_NAME_STR_LEN] = {0};
+#endif
     int port = ntohs(hdr->port);
     int cport = ntohs(hdr->cport);
 
@@ -1476,19 +1540,35 @@ int nodeUpdateAddressIfNeeded(clusterNode *node, clusterLink *link,
      * As a side effect this function never frees the passed 'link', so
      * it is safe to call during packet processing. */
     if (link == node->link) return 0;
-
     nodeIp2String(ip,link,hdr->myip);
-    if (node->port == port && node->cport == cport &&
-        strcmp(ip,node->ip) == 0) return 0;
 
+    do {
+#ifdef BUILD_SSL
+        memcpy(endpoint, hdr->endpoint, DNS_NAME_STR_LEN);
+        if (strcmp(endpoint, node->endpoint) != 0) {
+            break;
+        }
+#endif
+        if (node->port == port && node->cport == cport &&
+            strcmp(ip,node->ip) == 0) return 0;
+    } while(0);
     /* IP / port is different, update it. */
     memcpy(node->ip,ip,sizeof(ip));
+#ifdef BUILD_SSL
+    memcpy(node->endpoint,endpoint,sizeof(endpoint));
+#endif
     node->port = port;
     node->cport = cport;
     if (node->link) freeClusterLink(node->link);
     node->flags &= ~CLUSTER_NODE_NOADDR;
+#ifdef BUILD_SSL
+    serverLog(LL_WARNING, "Address updated for node %.40s, now %s:%d %s",
+        node->name, node->ip, node->port, node->endpoint);
+#else
     serverLog(LL_WARNING,"Address updated for node %.40s, now %s:%d",
         node->name, node->ip, node->port);
+#endif
+
 
     /* Check if this is our master and we have to change the
      * replication target as well. */
@@ -1752,7 +1832,8 @@ int clusterProcessPacket(clusterLink *link) {
                     myself->ip);
                 clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG);
             }
-        }
+         }
+
 
         /* Add this node if it is new for us and the msg type is MEET.
          * In this stage we don't try to add the node with the right
@@ -1763,6 +1844,9 @@ int clusterProcessPacket(clusterLink *link) {
 
             node = createClusterNode(NULL,CLUSTER_NODE_HANDSHAKE);
             nodeIp2String(node->ip,link,hdr->myip);
+#ifdef BUILD_SSL
+            memcpy(node->endpoint, hdr->endpoint, DNS_NAME_STR_LEN);
+#endif
             node->port = ntohs(hdr->port);
             node->cport = ntohs(hdr->cport);
             clusterAddNode(node);
@@ -1825,6 +1909,9 @@ int clusterProcessPacket(clusterLink *link) {
                     link->node->flags);
                 link->node->flags |= CLUSTER_NODE_NOADDR;
                 link->node->ip[0] = '\0';
+#ifdef BUILD_SSL
+                link->node->endpoint[0] = '\0';
+#endif
                 link->node->port = 0;
                 link->node->cport = 0;
                 freeClusterLink(link);
@@ -2117,7 +2204,7 @@ void clusterWriteHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     UNUSED(el);
     UNUSED(mask);
 
-    nwritten = write(fd, link->sndbuf, sdslen(link->sndbuf));
+    nwritten = rwrite(fd, link->sndbuf, sdslen(link->sndbuf));
     if (nwritten <= 0) {
         serverLog(LL_DEBUG,"I/O error writing to node link: %s",
             strerror(errno));
@@ -2167,7 +2254,7 @@ void clusterReadHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
             if (readlen > sizeof(buf)) readlen = sizeof(buf);
         }
 
-        nread = read(fd,buf,readlen);
+        nread = rread(fd,buf,readlen);
         if (nread == -1 && errno == EAGAIN) return; /* No more data ready. */
 
         if (nread <= 0) {
@@ -2268,6 +2355,13 @@ void clusterBuildMessageHdr(clusterMsg *hdr, int type) {
         hdr->myip[NET_IP_STR_LEN-1] = '\0';
     }
 
+#ifdef BUILD_SSL
+    memset(hdr->endpoint,0,DNS_NAME_STR_LEN);
+    if (server.cluster_announce_endpoint) {
+        strncpy(hdr->endpoint,server.cluster_announce_endpoint,DNS_NAME_STR_LEN);
+        hdr->endpoint[DNS_NAME_STR_LEN-1] = '\0';
+    }
+#endif
     /* Handle cluster-announce-port as well. */
     int announced_port = server.cluster_announce_port ?
                          server.cluster_announce_port : server.port;
@@ -3296,6 +3390,46 @@ void clusterHandleManualFailover(void) {
 /* -----------------------------------------------------------------------------
  * CLUSTER cron job
  * -------------------------------------------------------------------------- */
+void clusterClientSetup(clusterLink *link) {
+    clusterNode *node = link->node;
+    /* Queue a PING in the new connection ASAP: this is crucial
+     * to avoid false positives in failure detection.
+     *
+     * If the node is flagged as MEET, we send a MEET message instead
+     * of a PING one, to force the receiver to add us in its node
+     * table. */
+    mstime_t old_ping_sent = node->ping_sent;
+    clusterSendPing(link, node->flags & CLUSTER_NODE_MEET ?
+                          CLUSTERMSG_TYPE_MEET : CLUSTERMSG_TYPE_PING);
+    if (old_ping_sent){
+        do {
+#ifdef BUILD_SSL
+            if (server.ssl_config.enable_ssl == true) {
+                break;
+            }
+#endif
+            /* If there was an active ping before the link was
+            * disconnected, we want to restore the ping time, otherwise
+            * replaced by the clusterSendPing() call. If SSL is enabled,
+            * we don't want to do it because we have already spent some
+            * time in SSL negotiation. We don't want to be too aggressive
+            * in timeouts due to that. Also we reach this point after
+            * SSL negotiation, so network link is healthy to other node
+            * and we can be less aggressive */
+            node->ping_sent = old_ping_sent;
+        } while(0);
+    }
+    /* We can clear the flag after the first packet is sent.
+     * If we'll never receive a PONG, we'll never send new packets
+     * to this node. Instead after the PONG is received and we
+     * are no longer in meet/handshake status, we want to send
+     * normal PING packets. */
+    node->flags &= ~CLUSTER_NODE_MEET;
+
+    int cluster_port = node->cport;
+    serverLog(LL_DEBUG, "Connecting with Node %.40s at %s:%d",
+              node->name, node->ip, cluster_port);
+}
 
 /* This is executed 10 times every second */
 void clusterCron(void) {
@@ -3327,7 +3461,6 @@ void clusterCron(void) {
         if (changed) {
             prev_ip = curr_ip;
             if (prev_ip) prev_ip = zstrdup(prev_ip);
-
             if (curr_ip) {
                 strncpy(myself->ip,server.cluster_announce_ip,NET_IP_STR_LEN);
                 myself->ip[NET_IP_STR_LEN-1] = '\0';
@@ -3336,6 +3469,13 @@ void clusterCron(void) {
             }
         }
     }
+
+#ifdef BUILD_SSL
+    /* Make cluster announce endpoint in sync with actual endpoint */
+    if (server.cluster_announce_endpoint) {
+        strncpy(myself->endpoint, server.cluster_announce_endpoint, DNS_NAME_STR_LEN);
+    }
+#endif
 
     /* The handshake timeout is the time after which a handshake node that was
      * not turned into a normal node is removed from the nodes. Usually it is
@@ -3391,32 +3531,41 @@ void clusterCron(void) {
             link = createClusterLink(node);
             link->fd = fd;
             node->link = link;
-            aeCreateFileEvent(server.el,link->fd,AE_READABLE,
-                    clusterReadHandler,link);
-            /* Queue a PING in the new connection ASAP: this is crucial
-             * to avoid false positives in failure detection.
-             *
-             * If the node is flagged as MEET, we send a MEET message instead
-             * of a PING one, to force the receiver to add us in its node
-             * table. */
-            old_ping_sent = node->ping_sent;
-            clusterSendPing(link, node->flags & CLUSTER_NODE_MEET ?
-                    CLUSTERMSG_TYPE_MEET : CLUSTERMSG_TYPE_PING);
-            if (old_ping_sent) {
-                /* If there was an active ping before the link was
-                 * disconnected, we want to restore the ping time, otherwise
-                 * replaced by the clusterSendPing() call. */
-                node->ping_sent = old_ping_sent;
-            }
-            /* We can clear the flag after the first packet is sent.
-             * If we'll never receive a PONG, we'll never send new packets
-             * to this node. Instead after the PONG is received and we
-             * are no longer in meet/handshake status, we want to send
-             * normal PING packets. */
-            node->flags &= ~CLUSTER_NODE_MEET;
-
-            serverLog(LL_DEBUG,"Connecting with Node %.40s at %s:%d",
-                    node->name, node->ip, node->cport);
+            do {
+#ifdef BUILD_SSL
+                if (server.ssl_config.enable_ssl == true) {
+                    /* Setting ping_sent time is serving 2 purposes -
+                    * 1) To prevent ping sender code in clusterCron to send
+                    * ping while SSL handshake is ongoing. Sending a ping during
+                    * that period will break SSL handshake
+                    *
+                    * 2) To subject SSL negotiation to cluster timeout. By artificially
+                    * setting ping_sent time to the time when SSL negotiation started, we
+                    * are subjecting it to cluster timeout restrictions so that if SSL
+                    * negotiation is taking unexpectedly long, there is something wrong
+                    * and we want to retry
+                    */
+                    if(node->ping_sent == 0) node->ping_sent = link->ctime;
+                    if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
+                            SSL_PERFORMANCE_MODE_LOW_LATENCY, node->ip, server.ssl_config.fd_to_sslconn,
+                            server.ssl_config.fd_to_sslconn_size) == NULL) {
+                        serverLog(LL_WARNING, "Could not create SSL connection for connecting with Cluster Node");
+                        //no cleanup required. Handshake timeout will automatically take care of freeing this node
+                        continue;
+                    }
+                    if (aeCreateFileEvent(server.el, link->fd, AE_READABLE | AE_WRITABLE,
+                            sslNegotiateWithClusterNodeAsClient, link) == AE_ERR) {
+                        serverLog(LL_WARNING, "Could not create event handler SSL negotiation");
+                        //no cleanup required. Handshake timeout will automatically take care of freeing this node
+                        continue;
+                    }
+                    break;
+                }
+#endif
+                aeCreateFileEvent(server.el,link->fd,AE_READABLE,
+                        clusterReadHandler,link);
+                clusterClientSetup(link);
+            } while(0);
         }
     }
     dictReleaseIterator(di);
@@ -3968,16 +4117,33 @@ sds representClusterNodeFlags(sds ci, uint16_t flags) {
  * See clusterGenNodesDescription() top comment for more information.
  *
  * The function returns the string representation as an SDS string. */
-sds clusterGenNodeDescription(clusterNode *node) {
+sds clusterGenNodeDescription(clusterNode *node, int internalUse) {
+#ifndef BUILD_SSL
+    UNUSED(internalUse);
+#endif
     int j, start;
     sds ci;
 
-    /* Node coordinates */
-    ci = sdscatprintf(sdsempty(),"%.40s %s:%d@%d ",
-        node->name,
-        node->ip,
-        node->port,
-        node->cport);
+    do {
+#ifdef BUILD_SSL
+        if(internalUse){
+            /* Node coordinates */
+            ci = sdscatprintf(sdsempty(),"%.40s %s:%d@%d,%s ",
+                node->name,
+                node->ip,
+                node->port,
+                node->cport,
+                node->endpoint);
+            break;
+        }
+#endif
+        /* Node coordinates */
+        ci = sdscatprintf(sdsempty(),"%.40s %s:%d@%d ",
+            node->name,
+            getClientEndpointForNode(node),
+            node->port,
+            node->cport);    
+    } while(0);
 
     /* Flags */
     ci = representClusterNodeFlags(ci, node->flags);
@@ -4045,7 +4211,7 @@ sds clusterGenNodeDescription(clusterNode *node) {
  * The representation obtained using this function is used for the output
  * of the CLUSTER NODES function, and as format for the cluster
  * configuration file (nodes.conf) for a given node. */
-sds clusterGenNodesDescription(int filter) {
+sds clusterGenNodesDescription(int filter, int internalUse) {
     sds ci = sdsempty(), ni;
     dictIterator *di;
     dictEntry *de;
@@ -4055,7 +4221,7 @@ sds clusterGenNodesDescription(int filter) {
         clusterNode *node = dictGetVal(de);
 
         if (node->flags & filter) continue;
-        ni = clusterGenNodeDescription(node);
+        ni = clusterGenNodeDescription(node, internalUse);
         ci = sdscatsds(ci,ni);
         sdsfree(ni);
         ci = sdscatlen(ci,"\n",1);
@@ -4146,7 +4312,7 @@ void clusterReplyMultiBulkSlots(client *c) {
 
                 /* First node reply position is always the master */
                 addReplyMultiBulkLen(c, 3);
-                addReplyBulkCString(c, node->ip);
+                addReplyBulkCString(c, getClientEndpointForNode(node));
                 addReplyLongLong(c, node->port);
                 addReplyBulkCBuffer(c, node->name, CLUSTER_NAMELEN);
 
@@ -4156,7 +4322,7 @@ void clusterReplyMultiBulkSlots(client *c) {
                      * with modifications for per-slot node aggregation */
                     if (nodeFailed(node->slaves[i])) continue;
                     addReplyMultiBulkLen(c, 3);
-                    addReplyBulkCString(c, node->slaves[i]->ip);
+                    addReplyBulkCString(c, getClientEndpointForNode(node->slaves[i]));
                     addReplyLongLong(c, node->slaves[i]->port);
                     addReplyBulkCBuffer(c, node->slaves[i]->name, CLUSTER_NAMELEN);
                     nested_elements++;
@@ -4234,7 +4400,7 @@ NULL
     } else if (!strcasecmp(c->argv[1]->ptr,"nodes") && c->argc == 2) {
         /* CLUSTER NODES */
         robj *o;
-        sds ci = clusterGenNodesDescription(0);
+        sds ci = clusterGenNodesDescription(0, false);
 
         o = createObject(OBJ_STRING,ci);
         addReplyBulk(c,o);
@@ -4611,7 +4777,7 @@ NULL
 
         addReplyMultiBulkLen(c,n->numslaves);
         for (j = 0; j < n->numslaves; j++) {
-            sds ni = clusterGenNodeDescription(n->slaves[j]);
+            sds ni = clusterGenNodeDescription(n->slaves[j], false);
             addReplyBulkCString(c,ni);
             sdsfree(ni);
         }
@@ -4937,7 +5103,7 @@ migrateCachedSocket* migrateGetSocket(client *c, robj *host, robj *port, long ti
         /* Too many items, drop one at random. */
         dictEntry *de = dictGetRandomKey(server.migrate_cached_sockets);
         cs = dictGetVal(de);
-        close(cs->fd);
+        rclose(cs->fd);
         zfree(cs);
         dictDelete(server.migrate_cached_sockets,dictGetKey(de));
     }
@@ -4953,14 +5119,38 @@ migrateCachedSocket* migrateGetSocket(client *c, robj *host, robj *port, long ti
     }
     anetEnableTcpNoDelay(server.neterr,fd);
 
-    /* Check if it connects within the specified timeout. */
-    if ((aeWait(fd,AE_WRITABLE,timeout) & AE_WRITABLE) == 0) {
-        sdsfree(name);
-        addReplySds(c,
-            sdsnew("-IOERR error or timeout connecting to the client\r\n"));
-        close(fd);
-        return NULL;
-    }
+    do {
+#ifdef BUILD_SSL
+        if (server.ssl_config.enable_ssl) {
+            // Setup SSL connection, no need to check for timeout since it's done during negotiation
+            if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
+                    server.ssl_config.ssl_performance_mode, c->argv[1]->ptr,
+                    server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
+                sdsfree(name);
+                addReplySds(c,
+                    sdsnew("-SSLERR error initializing ssl connection for the target node\r\n"));
+                close(fd);
+                return NULL;
+            }
+            if (syncSslNegotiateForFd(fd, timeout) != C_OK) {
+                sdsfree(name);
+                addReplySds(c,
+                    sdsnew("-SSLERR error performing SSL negotiation with the target node\r\n"));
+                rclose(fd);
+                return NULL;
+            }
+            break;
+        }
+#endif
+        /* Check if it connects within the specified timeout. */
+        if ((aeWait(fd, AE_WRITABLE, timeout) & AE_WRITABLE) == 0) {
+            sdsfree(name);
+            addReplySds(c,
+                sdsnew("-IOERR error or timeout connecting to the client\r\n"));
+            close(fd);
+            return NULL;
+        }
+    } while(0);
 
     /* Add to the cache and return it to the caller. */
     cs = zmalloc(sizeof(*cs));
@@ -4985,7 +5175,7 @@ void migrateCloseSocket(robj *host, robj *port) {
         return;
     }
 
-    close(cs->fd);
+    rclose(cs->fd);
     zfree(cs);
     dictDelete(server.migrate_cached_sockets,name);
     sdsfree(name);
@@ -4999,7 +5189,7 @@ void migrateCloseTimedoutSockets(void) {
         migrateCachedSocket *cs = dictGetVal(de);
 
         if ((server.unixtime - cs->last_use_time) > MIGRATE_SOCKET_CACHE_TTL) {
-            close(cs->fd);
+            rclose(cs->fd);
             zfree(cs);
             dictDelete(server.migrate_cached_sockets,dictGetKey(de));
         }
@@ -5571,7 +5761,7 @@ void clusterRedirectClient(client *c, clusterNode *n, int hashslot, int error_co
         addReplySds(c,sdscatprintf(sdsempty(),
             "-%s %d %s:%d\r\n",
             (error_code == CLUSTER_REDIR_ASK) ? "ASK" : "MOVED",
-            hashslot,n->ip,n->port));
+            hashslot, getClientEndpointForNode(n), n->port));
     } else {
         serverPanic("getNodeByQuery() unknown error.");
     }
