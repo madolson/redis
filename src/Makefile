@@ -55,7 +55,7 @@ endif
 ifeq ($(USE_JEMALLOC),yes)
 	MALLOC=jemalloc
 endif
-
+	
 ifeq ($(USE_JEMALLOC),no)
 	MALLOC=libc
 endif
@@ -74,12 +74,16 @@ ifeq ($(BUILD_SSL),yes)
 	S2N_LIB_DIR ?= ../deps/s2n/lib
 	OPENSSL_INCLUDE_DIR ?= ../deps/openssl/include
 	OPENSSL_LIB_DIR ?= ../deps/openssl
+	OPENSSL_INCLUDE_DIR ?= ../deps/openssl/include
 
 	SSL_TARGETS = openssl s2n
 
-	FINAL_CFLAGS += $(addprefix -I,$(S2N_INCLUDE_DIR)) $(addprefix -I,$(OPENSSL_INCLUDE_DIR)) $(addprefix -D,BUILD_SSL) 
+	FINAL_CFLAGS += $(addprefix -I,$(S2N_INCLUDE_DIR)) $(addprefix -I,$(S2N_INCLUDE_DIR)) $(addprefix -D,BUILD_SSL) 
 	FINAL_LDFLAGS += $(addprefix -L,$(S2N_LIB_DIR)) $(addprefix -L,$(OPENSSL_LIB_DIR))
-	FINAL_LIBS += $(S2N_LIB_DIR)/libs2n.a -lrt $(OPENSSL_LIB_DIR)/libssl.a $(OPENSSL_LIB_DIR)/libcrypto.a
+	FINAL_LIBS += $(S2N_LIB_DIR)/libs2n.a $(OPENSSL_LIB_DIR)/libssl.a $(OPENSSL_LIB_DIR)/libcrypto.a
+	ifneq ($(uname_S),Darwin)
+		FINAL_LIBS += -lrt
+	endif
 endif
 
 ifeq ($(uname_S),SunOS)

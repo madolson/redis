@@ -87,8 +87,8 @@ void moduleCallClusterReceivers(const char *sender_id, uint64_t module_id, uint8
  * Converts cluster_interface_type str to corresponding enum
  */
 int parseClusterInterfaceType(char *typeString) {
-    if(!strcasecmp(typeString, "ip")) return CLUSTER_INTERFACE_TYPE_IP;
-    else if(!strcasecmp(typeString, "dns")) return CLUSTER_INTERFACE_TYPE_DNS;
+    if (!strcasecmp(typeString, "ip")) return CLUSTER_INTERFACE_TYPE_IP;
+    else if (!strcasecmp(typeString, "dns")) return CLUSTER_INTERFACE_TYPE_DNS;
     else return CLUSTER_INTERFACE_TYPE_NONE;
 }
 
@@ -341,7 +341,7 @@ int clusterSaveConfig(int do_fsync) {
 
     /* Get the nodes description and concatenate our "vars" directive to
      * save currentEpoch and lastVoteEpoch. */
-    ci = clusterGenNodesDescription(CLUSTER_NODE_HANDSHAKE, true);
+    ci = clusterGenNodesDescription(CLUSTER_NODE_HANDSHAKE, 1);
     ci = sdscatprintf(ci,"vars currentEpoch %llu lastVoteEpoch %llu\n",
         (unsigned long long) server.cluster->currentEpoch,
         (unsigned long long) server.cluster->lastVoteEpoch);
@@ -624,20 +624,12 @@ clusterLink *createClusterLink(clusterNode *node) {
 void freeClusterLink(clusterLink *link) {
     if (link->fd != -1) {
         aeDeleteFileEvent(server.el, link->fd, AE_READABLE|AE_WRITABLE);
-#ifdef BUILD_SSL
-        if(server.ssl_config.enable_ssl == true){
-            serverAssert((unsigned int)link->fd < server.ssl_config.fd_to_sslconn_size);
-            if(server.ssl_config.fd_to_sslconn[link->fd] != NULL){
-                cleanupSslConnectionForFd(link->fd);
-            }
-        }
-#endif
     }
     sdsfree(link->sndbuf);
     sdsfree(link->rcvbuf);
     if (link->node)
         link->node->link = NULL;
-    close(link->fd);
+    rclose(link->fd);
     zfree(link);
 }
 
@@ -677,7 +669,7 @@ void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         link->fd = cfd;
         do {
 #ifdef BUILD_SSL
-            if (server.ssl_config.enable_ssl == true) {
+            if (server.ssl_config.enable_ssl) {
                 serverLog(LL_DEBUG, "Initializing SSL connection for cluster node %s:%d", cip, cport);
                 if (initSslConnection(S2N_SERVER, server.ssl_config.server_ssl_config, cfd, SSL_PERFORMANCE_MODE_LOW_LATENCY, NULL,
                                 server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
@@ -3401,10 +3393,10 @@ void clusterClientSetup(clusterLink *link) {
     mstime_t old_ping_sent = node->ping_sent;
     clusterSendPing(link, node->flags & CLUSTER_NODE_MEET ?
                           CLUSTERMSG_TYPE_MEET : CLUSTERMSG_TYPE_PING);
-    if (old_ping_sent){
+    if (old_ping_sent) {
         do {
 #ifdef BUILD_SSL
-            if (server.ssl_config.enable_ssl == true) {
+            if (server.ssl_config.enable_ssl) {
                 break;
             }
 #endif
@@ -3533,7 +3525,7 @@ void clusterCron(void) {
             node->link = link;
             do {
 #ifdef BUILD_SSL
-                if (server.ssl_config.enable_ssl == true) {
+                if (server.ssl_config.enable_ssl) {
                     /* Setting ping_sent time is serving 2 purposes -
                     * 1) To prevent ping sender code in clusterCron to send
                     * ping while SSL handshake is ongoing. Sending a ping during
@@ -3545,7 +3537,7 @@ void clusterCron(void) {
                     * negotiation is taking unexpectedly long, there is something wrong
                     * and we want to retry
                     */
-                    if(node->ping_sent == 0) node->ping_sent = link->ctime;
+                    if (node->ping_sent == 0) node->ping_sent = link->ctime;
                     if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
                             SSL_PERFORMANCE_MODE_LOW_LATENCY, node->ip, server.ssl_config.fd_to_sslconn,
                             server.ssl_config.fd_to_sslconn_size) == NULL) {
@@ -4126,7 +4118,7 @@ sds clusterGenNodeDescription(clusterNode *node, int internalUse) {
 
     do {
 #ifdef BUILD_SSL
-        if(internalUse){
+        if (internalUse) {
             /* Node coordinates */
             ci = sdscatprintf(sdsempty(),"%.40s %s:%d@%d,%s ",
                 node->name,
@@ -4400,7 +4392,7 @@ NULL
     } else if (!strcasecmp(c->argv[1]->ptr,"nodes") && c->argc == 2) {
         /* CLUSTER NODES */
         robj *o;
-        sds ci = clusterGenNodesDescription(0, false);
+        sds ci = clusterGenNodesDescription(0, 0);
 
         o = createObject(OBJ_STRING,ci);
         addReplyBulk(c,o);
@@ -4777,7 +4769,7 @@ NULL
 
         addReplyMultiBulkLen(c,n->numslaves);
         for (j = 0; j < n->numslaves; j++) {
-            sds ni = clusterGenNodeDescription(n->slaves[j], false);
+            sds ni = clusterGenNodeDescription(n->slaves[j], 0);
             addReplyBulkCString(c,ni);
             sdsfree(ni);
         }

@@ -3420,7 +3420,7 @@ sds genRedisInfoString(char *section) {
     /* SSL Statistics */
     if (allsections || defsections || (!strcasecmp(section,"ssl"))) {
         if (sections++) info = sdscat(info,"\r\n");
-        if (server.ssl_config.enable_ssl == true) {
+        if (server.ssl_config.enable_ssl) {
             info = sdscatprintf(info,
                 "# SSL\r\n"
                     "ssl_enabled:%s\r\n"
@@ -3439,7 +3439,7 @@ sds genRedisInfoString(char *section) {
                     "ssl_total_repeated_reads:%"PRIu64"\r\n"
                     "ssl_cur_repeated_reads:%lu\r\n"
                     "ssl_max_simultaneous_repeated_reads:%lu\r\n",
-                server.ssl_config.enable_ssl == true? "yes": "no",
+                server.ssl_config.enable_ssl ? "yes": "no",
                 server.ssl_config.connections_to_previous_certificate,
                 server.ssl_config.connections_to_current_certificate,
                 server.ssl_config.certificate_not_before_date,

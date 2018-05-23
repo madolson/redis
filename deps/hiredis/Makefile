@@ -49,9 +49,9 @@ ifeq ($(BUILD_SSL),yes)
 	S2N_INCLUDE_DIR ?= ../s2n/api
 	S2N_LIB_DIR ?= ../s2n/lib
 	OPENSSL_LIB_DIR ?= ../openssl
-	OPENSSL_INCLUDE_DIR ?= ../openssl
+	OPENSSL_INCLUDE_DIR ?= ../openssl/include
 
-	REAL_CFLAGS += $(addprefix -I,$(S2N_INCLUDE_DIR)) $(addprefix -D,BUILD_SSL) 
+	REAL_CFLAGS += $(addprefix -I,$(S2N_INCLUDE_DIR)) $(addprefix -I,$(OPENSSL_INCLUDE_DIR)) $(addprefix -D,BUILD_SSL) 
 	REAL_LDFLAGS += $(S2N_LIB_DIR)/libs2n.a $(CRYPTO_LIB_DIR)/libssl.a $(CRYPTO_LIB_DIR)/libcrypto.a
 endif
 

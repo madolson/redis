@@ -4,6 +4,13 @@ Regular tests do not require you to install the package.
 
 There wasn't a lot of documentation for installation, but these commands worked for me.
 
+===== MacOS =====
+TODO: Get this working on a MacOS, which doesn't like tcltls.
+
+===== UBUNTU =====
+sudo apt-get install tcltls
+
+===== CENT-OS =====
 cd /tmp
 wget https://core.tcl.tk/tcltls/uv/tcltls-1.7.16.tar.gz
 tar -xvf tcltls-1.7.16.tar.gz

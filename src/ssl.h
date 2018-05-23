@@ -2,13 +2,12 @@
 #define SSL_H
 
 
-#include <stdbool.h>
 #include <s2n.h>
 #include "ae.h"
 #include <openssl/ssl.h>
 #include "adlist.h"
 
-#define SSL_ENABLE_DEFAULT false
+#define SSL_ENABLE_DEFAULT 0
 
 #define SSL_CIPHER_PREFS_DEFAULT "default"
 
@@ -23,8 +22,6 @@ typedef enum {
 #define SSL_PERFORMANCE_MODE_HIGH_THROUGHPUT 1
 #define SSL_PERFORMANCE_MODE_DEFAULT SSL_PERFORMANCE_MODE_LOW_LATENCY
 #define DER_CERT_LEN_BYTES 3
-#define CERT_VALIDATION_IGNORE_EXPIRED_CERTS true
-#define CERT_VALIDATION_IGNORE_SELF_SIGNED_CERTS  false
 #define CERT_CNAME_MAX_LENGTH 256
 #define CERT_DATE_MAX_LENGTH 256
 //default value of root-ca-certs-path parameter.
@@ -66,7 +63,7 @@ typedef struct ssl_connection {
 /* Structure to store SSL related information */
 typedef struct {
 
-    bool enable_ssl; /* Controls whether SSL is enabled or not*/
+    int enable_ssl; /* Controls whether SSL is enabled or not. */
 
     struct s2n_config *server_ssl_config; /* Structure to store S2N configuration like certificate, diffie-hellman parameters, cipher suite preferences */
 
@@ -137,7 +134,7 @@ void cleanupSsl(ssl_t *ssl);
 
 void initSslConfigDefaults(ssl_t *ssl_config);
 
-bool isResizeAllowed(ssl_connection **fd_to_ssl_conn, int cur_size, int new_size);
+int isResizeAllowed(ssl_connection **fd_to_ssl_conn, int cur_size, int new_size);
 
 int resizeFdToSslConnSize(ssl_t *ssl, unsigned int setsize);
 

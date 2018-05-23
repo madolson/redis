@@ -94,7 +94,7 @@ client *createClient(int fd) {
             anetKeepAlive(NULL,fd,server.tcpkeepalive);
         do {
 #ifdef BUILD_SSL
-            if (server.ssl_config.enable_ssl == true) {
+            if (server.ssl_config.enable_ssl) {
                 if ((unsigned int)fd < server.ssl_config.fd_to_sslconn_size && server.ssl_config.fd_to_sslconn[fd] != NULL) {
                     // SSL is already established, just setup the event to read from client
                     aeDeleteFileEvent(server.el, fd, AE_READABLE|AE_WRITABLE);
@@ -619,7 +619,7 @@ static void acceptCommonHandler(int fd, int flags, char *ip) {
      * mode and we can send an error for free using the Kernel I/O */
     if (listLength(server.clients) > server.maxclients) {
 #ifdef BUILD_SSL
-        if(server.ssl_config.enable_ssl == true){
+        if(server.ssl_config.enable_ssl){
             // If SSL is enabled we send nothing to the client since handshake isn't
             // done yet, we just kill it
             server.stat_rejected_conn++;
@@ -650,7 +650,7 @@ static void acceptCommonHandler(int fd, int flags, char *ip) {
     {
         if (strcmp(ip,"127.0.0.1") && strcmp(ip,"::1")) {
 #ifdef BUILD_SSL
-            if(server.ssl_config.enable_ssl == true){
+            if(server.ssl_config.enable_ssl){
                 // If SSL is enabled we send nothing to the client since handshake isn't
                 // done yet, we just kill it.
                 server.stat_rejected_conn++;

@@ -84,25 +84,26 @@ jemalloc: .make-prerequisites
 
 .PHONY: jemalloc
 
-SSL_CONFIG= ./config
+ROOT_DIR:=$(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
+SSL_CONFIG= ./config -fPIC no-shared  --prefix=$(ROOT_DIR)/s2n/libcrypto-root/
 
 ifeq ($(uname_S),Darwin)
 	# Make isinf() available
-	SSL_CONFIG= ./Configure
+	SSL_CONFIG= ./Configure --prefix=$(ROOT_DIR)/s2n/libcrypto-root darwin64-x86_64-cc
 endif
+
 
 openssl: .make-prerequisites
 	@printf '%b %b\n' $(MAKECOLOR)MAKE$(ENDCOLOR) $(BINCOLOR)$@$(ENDCOLOR)
 	cd openssl && $(SSL_CONFIG)
 	cd openssl && $(MAKE) depend
 	cd openssl && $(MAKE)
+	cd openssl && $(MAKE) install
 
 .PHONY: openssl
 
-ROOT_DIR:=$(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
-
 s2n: .make-prerequisites
 	@printf '%b %b\n' $(MAKECOLOR)MAKE$(ENDCOLOR) $(BINCOLOR)$@$(ENDCOLOR)
-	cd s2n && LIBCRYPTO_ROOT=$(ROOT_DIR)/openssl $(MAKE) libs
+	cd s2n && $(MAKE) libs
 
 .PHONY: s2n

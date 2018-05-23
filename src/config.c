@@ -145,7 +145,7 @@ int yesnotoi(char *s) {
     else return -1;
 }
 
-bool parseAnnounceEndpoint(char *s, int resolveDns) {
+int parseAnnounceEndpoint(char *s, int resolveDns) {
     /* Make sure that provided dns name is valid if resolveDns is 1 */
     char parsed_ip_address[DNS_NAME_STR_LEN];
     if (!resolveDns || anetResolve(NULL,s,parsed_ip_address,
@@ -155,9 +155,9 @@ bool parseAnnounceEndpoint(char *s, int resolveDns) {
         }
         server.cluster_announce_endpoint= zcalloc(DNS_NAME_STR_LEN);
         strcpy(server.cluster_announce_endpoint, s);
-        return true;
+        return 1;
     }
-    return false;
+    return 0;
 }
 
 int loadFile(const char *filePath, char **buffer) {
@@ -868,7 +868,7 @@ void loadServerConfigFromString(char *config) {
         goto loaderr;
     }
 #ifdef BUILD_SSL
-    if(server.ssl_config.enable_ssl == true){
+    if(server.ssl_config.enable_ssl){
         if(server.ssl_config.ssl_certificate == NULL) {
             err = "certificate-file is not provided in arguments";
             goto loaderr;
@@ -1030,9 +1030,8 @@ void configSetCommand(client *c) {
 #ifdef BUILD_SSL
 
                 //Preemptively check that if SSL api is able to accommodate this change request
-                if (server.ssl_config.enable_ssl == true &&
-                    isResizeAllowed(server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size, newsize) ==
-                    false) {
+                if (server.ssl_config.enable_ssl &&
+                    !isResizeAllowed(server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size, newsize)) {
                     addReplyError(c, "The SSL API used by Redis is not able to handle the specified number of clients");
                     server.maxclients = orig_value;
                     return;
@@ -1158,7 +1157,7 @@ void configSetCommand(client *c) {
         server.notify_keyspace_events = flags;
 #ifdef BUILD_SSL
     } config_set_special_field("ssl-renew-certificate") {
-        if(server.ssl_config.enable_ssl == false) {
+        if(!server.ssl_config.enable_ssl) {
             addReplyError(c, "This command is not available when SSL is disabled");
             return;
         }

@@ -12,5 +12,9 @@ echo "Downloaded latest version of openssl 1.0.2"
 
 cd ..
 git clone https://github.com/awslabs/s2n.git s2n
+cd s2n
+git checkout 34c38aa4c9845ad3434429eefff70faafed949e5
+cd ..
+
 echo "Downloaded latest version of s2n"
 

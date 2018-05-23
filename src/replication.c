@@ -974,7 +974,7 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
                 slave->repl_ack_time = server.unixtime; /* Timeout otherwise. */
                 do {
 #ifdef BUILD_SSL
-                    if (server.ssl_config.enable_ssl == true) {
+                    if (server.ssl_config.enable_ssl) {
                         startWaitForSlaveToLoadRdbAfterRdbTransfer(slave);
                         break;
                     }
@@ -1058,7 +1058,7 @@ void shiftReplicationId(void) {
 int slaveIsInHandshakeState(void) {
 #ifdef BUILD_SSL
     if (server.repl_state == REPL_STATE_SSL_HANDSHAKE){
-        return true;
+        return 1;
     }
 #endif
     return server.repl_state >= REPL_STATE_RECEIVE_PONG &&
@@ -1307,9 +1307,9 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
 #ifdef BUILD_SSL
             // We need to re-negotiate with master on a socket based bgsave when ssl is
             // enabled.
-            int renegotiatieSsl = (usemark == true && server.ssl_config.enable_ssl == true);
+            int renegotiatieSsl = (usemark && server.ssl_config.enable_ssl);
 
-            if (renegotiatieSsl == true) {
+            if (renegotiatieSsl) {
                 server.repl_state = REPL_STATE_SSL_HANDSHAKE;
                 startSslNegotiateWithMasterAfterRdbLoad(fd);
                 break;
@@ -1910,7 +1910,7 @@ int connectWithMaster(void) {
     }
     do {
 #ifdef BUILD_SSL
-        if (server.ssl_config.enable_ssl == true) {
+        if (server.ssl_config.enable_ssl) {
             if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
                             server.ssl_config.ssl_performance_mode,server.masterhost,
                             server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
@@ -1939,7 +1939,7 @@ int connectWithMaster(void) {
     server.repl_transfer_lastio = server.unixtime;
     server.repl_transfer_s = fd;
 #ifdef BUILD_SSL
-    server.repl_state = server.ssl_config.enable_ssl == true ? REPL_STATE_SSL_HANDSHAKE: REPL_STATE_CONNECTING;
+    server.repl_state = server.ssl_config.enable_ssl ? REPL_STATE_SSL_HANDSHAKE: REPL_STATE_CONNECTING;
 #else
     server.repl_state = REPL_STATE_CONNECTING;
 #endif
