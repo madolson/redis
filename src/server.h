@@ -1487,7 +1487,7 @@ size_t moduleCount(void);
 void moduleAcquireGIL(void);
 void moduleReleaseGIL(void);
 void moduleNotifyKeyspaceEvent(int type, const char *event, robj *key, int dbid);
-
+int moduleCheckAuthenticationChain(client *client, robj *username, robj *password);
 
 /* Utils */
 long long ustime(void);
@@ -1754,6 +1754,8 @@ int ACLLoadConfiguredUsers(void);
 sds ACLDescribeUser(user *u);
 void ACLLoadUsersAtStartup(void);
 void addReplyCommandCategories(client *c, struct redisCommand *cmd);
+user *ACLCreateUnlinkedUser();
+void ACLFreeUserAndKillClients(user *u);
 
 /* Sorted sets data type */
 

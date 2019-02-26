@@ -258,6 +258,22 @@ typedef struct RedisModuleDictIter {
     raxIterator ri;
 } RedisModuleDictIter;
 
+/* Data structures related to the export redis module user */
+typedef struct RedisModuleUser {
+    user *user;
+} RedisModuleUser;
+
+/* The callback function that modules can define instead of using redis ACL authorization */
+typedef RedisModuleUser *(*RedisModulePasswordAuthenticator)(void *user, size_t userlen, void *pass, size_t passlen);
+
+/* Data structures related to password validation*/
+typedef struct PasswordAuthenticator {
+    sds name;
+    RedisModulePasswordAuthenticator authFunc;
+} PasswordAuthenticator;
+
+static list *moduleAuthenticationChain;
+
 /* --------------------------------------------------------------------------
  * Prototypes
  * -------------------------------------------------------------------------- */
@@ -4348,6 +4364,108 @@ int RM_GetTimerInfo(RedisModuleCtx *ctx, RedisModuleTimerID id, uint64_t *remain
 }
 
 /* --------------------------------------------------------------------------
+ * Modules ACL API
+ *
+ * Implements a hook into the authentication and authorization within Redis. 
+ * -------------------------------------------------------------------------- */
+
+/* Create an links a new password authenticator to the authentication chain. Password 
+ * authenticators must have a unique name and are evaluated in the order that you add 
+ * them to the chain. */
+int RM_CreatePasswordAuthenticator(const char *name, RedisModulePasswordAuthenticator authFunc) {
+    listIter li;
+    listNode *ln;
+    listRewind(moduleAuthenticationChain, &li);
+    while((ln = listNext(&li))) {
+        PasswordAuthenticator *authenticator = (PasswordAuthenticator *) ln->value;
+        if(!strcmp(name, authenticator->name))
+            return REDISMODULE_ERR;
+    }
+
+    PasswordAuthenticator *authenticator = zmalloc(sizeof(PasswordAuthenticator));
+    authenticator->name = sdsnew(name);
+    authenticator->authFunc = authFunc;
+
+    listAddNodeTail(moduleAuthenticationChain, authenticator);
+    return REDISMODULE_OK;
+}
+
+/* Removes a password authenticator from the validation chain and frees all of its
+ * resources except any users it may have created. */
+int RM_RemovePasswordAuthenticator(const char *name) {
+    listIter li;
+    listNode *ln;
+    
+    listRewind(moduleAuthenticationChain, &li);
+    while((ln = listNext(&li))) {
+        PasswordAuthenticator *authenticator = ln->value;
+        if(!strcmp(name, authenticator->name)) {
+            listDelNode(moduleAuthenticationChain, ln);
+            sdsfree(authenticator->name);
+            zfree(authenticator);
+            return REDISMODULE_OK;
+        }
+    }
+
+    return REDISMODULE_ERR;
+}
+
+/* Creates a new user that is unlinked from the main ACL user dictionary. These
+ * users behave the same way as those in ACL.c except for a few minor 
+ * differences. These users do not exist within a namespace, and handling 
+ * duplicate users is the responsiblity of the calling module. These users are
+ * also not attached to the redis users dictionary, so they are not returned 
+ * via ACL LIST or GETUSER. This also means that users created here must be 
+ * updated with the SetUserACL function instead of through ACL SETUSER. */
+RedisModuleUser *RM_CreateUser(const char *name) {
+    RedisModuleUser *newuser = zmalloc(sizeof(RedisModuleUser));
+    newuser->user = ACLCreateUnlinkedUser();
+
+    /* Free the previous temporarily assigned name to assign the new one */
+    sdsfree(newuser->user->name);
+    newuser->user->name = sdsnew(name);
+    return newuser;
+}
+
+/* Frees a given user and disconnects all of the clients that have been
+ * authenticated with it. The function should be used when a user is no
+ * longer valid as it is the safe way to deauthrize a user. */
+void RM_FreeUser(RedisModuleUser *user) {
+    ACLFreeUserAndKillClients(user->user);
+    zfree(user);
+}
+
+/* Sets the user permission of a user created through the redis module 
+ * interface. The syntax is the sam as ACL SETUSER, so refer to the 
+ * documentation in acl.c for more information. */
+int RM_SetUserACL(RedisModuleUser *user, const char* acl) {
+    return ACLSetUser(user->user, acl, -1);
+}
+
+/* Checks all of the password authenticator in order to see if the given username
+ * and password are valid. If any combination pair is valid it will return C_OK
+ * with the client authenticated with the given client. If the chain is empty or
+ * the pair is invalid for all authenticator, it will return C_ERR.
+ */
+int moduleCheckAuthenticationChain(client *client, robj *username, robj *password) {
+    listIter li;
+    listNode *ln;
+    
+    listRewind(moduleAuthenticationChain, &li);
+    while((ln = listNext(&li))) {
+        PasswordAuthenticator *authenticator = ln->value;
+        RedisModuleUser *authuser = authenticator->authFunc(username->ptr, 
+            sdslen(username->ptr), password->ptr, sdslen(password->ptr));
+        if (authuser) {
+            client->user = authuser->user;
+            client->authenticated = 1;
+            return C_OK;
+        }
+    }
+    return C_ERR;
+}
+
+/* --------------------------------------------------------------------------
  * Modules Dictionary API
  *
  * Implements a sorted dictionary (actually backed by a radix tree) with
@@ -4655,6 +4773,7 @@ void moduleRegisterCoreAPI(void);
 void moduleInitModulesSystem(void) {
     moduleUnblockedClients = listCreate();
     server.loadmodule_queue = listCreate();
+    moduleAuthenticationChain = listCreate();
     modules = dictCreate(&modulesDictType,NULL);
 
     /* Set up the keyspace notification susbscriber list and static client */
@@ -5053,4 +5172,10 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(DictPrev);
     REGISTER_API(DictCompareC);
     REGISTER_API(DictCompare);
+
+    REGISTER_API(CreatePasswordAuthenticator);
+    REGISTER_API(RemovePasswordAuthenticator);
+    REGISTER_API(CreateUser);
+    REGISTER_API(FreeUser);
+    REGISTER_API(SetUserACL);
 }

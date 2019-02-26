@@ -147,6 +147,7 @@ typedef struct RedisModuleBlockedClient RedisModuleBlockedClient;
 typedef struct RedisModuleClusterInfo RedisModuleClusterInfo;
 typedef struct RedisModuleDict RedisModuleDict;
 typedef struct RedisModuleDictIter RedisModuleDictIter;
+typedef struct RedisModuleUser RedisModuleUser;
 
 typedef int (*RedisModuleCmdFunc)(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
 typedef void (*RedisModuleDisconnectFunc)(RedisModuleCtx *ctx, RedisModuleBlockedClient *bc);
@@ -159,6 +160,7 @@ typedef void (*RedisModuleTypeDigestFunc)(RedisModuleDigest *digest, void *value
 typedef void (*RedisModuleTypeFreeFunc)(void *value);
 typedef void (*RedisModuleClusterMessageReceiver)(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, const unsigned char *payload, uint32_t len);
 typedef void (*RedisModuleTimerProc)(RedisModuleCtx *ctx, void *data);
+typedef RedisModuleUser *(*RedisModulePasswordAuthenticator)(void *user, size_t userlen, void *pass, size_t passlen);
 
 #define REDISMODULE_TYPE_METHOD_VERSION 1
 typedef struct RedisModuleTypeMethods {
@@ -332,6 +334,11 @@ void REDISMODULE_API_FUNC(RedisModule_GetRandomBytes)(unsigned char *dst, size_t
 void REDISMODULE_API_FUNC(RedisModule_GetRandomHexChars)(char *dst, size_t len);
 void REDISMODULE_API_FUNC(RedisModule_SetDisconnectCallback)(RedisModuleBlockedClient *bc, RedisModuleDisconnectFunc callback);
 void REDISMODULE_API_FUNC(RedisModule_SetClusterFlags)(RedisModuleCtx *ctx, uint64_t flags);
+int REDISMODULE_API_FUNC(RedisModule_CreatePasswordAuthenticator)(const char *name, RedisModulePasswordAuthenticator authFunc);
+int REDISMODULE_API_FUNC(RedisModule_RemovePasswordAuthenticator)(const char *name);
+RedisModuleUser *REDISMODULE_API_FUNC(RedisModule_CreateUser)(const char *name);
+void REDISMODULE_API_FUNC(RedisModule_FreeUser)(RedisModuleUser *user);
+int REDISMODULE_API_FUNC(RedisModule_SetUserACL)(RedisModuleUser *user, const char* acl);
 #endif
 
 /* This is included inline inside each Redis module. */
@@ -492,6 +499,11 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(GetRandomBytes);
     REDISMODULE_GET_API(GetRandomHexChars);
     REDISMODULE_GET_API(SetClusterFlags);
+    REDISMODULE_GET_API(CreatePasswordAuthenticator);
+    REDISMODULE_GET_API(RemovePasswordAuthenticator);
+    REDISMODULE_GET_API(CreateUser);
+    REDISMODULE_GET_API(FreeUser);
+    REDISMODULE_GET_API(SetUserACL);
 #endif
 
     if (RedisModule_IsModuleNameBusy && RedisModule_IsModuleNameBusy(name)) return REDISMODULE_ERR;

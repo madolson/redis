@@ -1621,10 +1621,16 @@ void authCommand(client *c) {
         password = c->argv[2];
     }
 
-    if (ACLAuthenticateUser(c,username,password) == C_OK) {
-        addReply(c,shared.ok);
+    if (ACLAuthenticateUser(c,username,password) != C_OK) {
+        /* ACL Users are always checked first, followed by evaluating the
+         * module authentication chain. */
+        if (moduleCheckAuthenticationChain(c,username,password) != C_OK) {
+            addReplyError(c,"-WRONGPASS invalid username-password pair");
+        } else {
+            addReply(c,shared.ok);
+        }
     } else {
-        addReplyError(c,"-WRONGPASS invalid username-password pair");
+        addReply(c,shared.ok);
     }
 
     /* Free the "default" string object we created for the two
