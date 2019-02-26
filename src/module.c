@@ -349,6 +349,11 @@ list *RedisModule_EventListeners; /* Global list of all the active events. */
 unsigned long long ModulesInHooks = 0; /* Total number of modules in hooks
                                           callbacks right now. */
 
+/* Data structures related to the export redis module user */
+typedef struct RedisModuleUser {
+    user *user;
+} RedisModuleUser;
+
 /* --------------------------------------------------------------------------
  * Prototypes
  * -------------------------------------------------------------------------- */
@@ -5109,6 +5114,76 @@ int RM_GetTimerInfo(RedisModuleCtx *ctx, RedisModuleTimerID id, uint64_t *remain
 }
 
 /* --------------------------------------------------------------------------
+ * Modules ACL API
+ *
+ * Implements a hook into the authentication and authorization within Redis. 
+ * --------------------------------------------------------------------------*/
+
+/* Creates a new user that is unlinked from the main ACL user dictionary. These
+ * users behave the same way as those in ACL.c except for a few minor 
+ * differences. These users do not exist within a namespace, and handling 
+ * duplicate users is the responsibility of the calling module. These users are
+ * also not attached to the redis users dictionary, so they are not returned 
+ * via ACL LIST or GETUSER. This also means that users created here must be 
+ * updated with the SetUserACL function instead of through ACL SETUSER. */
+RedisModuleUser *RM_CreateModuleUser(const char *name) {
+    RedisModuleUser *new_user = zmalloc(sizeof(*new_user));
+    new_user->user = ACLCreateUnlinkedUser();
+
+    /* Free the previous temporarily assigned name to assign the new one */
+    sdsfree(new_user->user->name);
+    new_user->user->name = sdsnew(name);
+    return new_user;
+}
+
+/* Frees a given user and disconnects all of the clients that have been
+ * authenticated with it. The function should be used when a user is no
+ * longer valid as it is the safe way to authorize a user. 
+ * 
+ * This can not be called on modules retrieved through GetACLUser.
+ * */
+int RM_FreeModuleUser(RedisModuleUser *user) {
+    if (user->user->module_reference) {
+        return REDISMODULE_ERR;
+    }
+    ACLFreeUserAndKillClients(user->user);
+    zfree(user);
+    return REDISMODULE_OK;
+}
+
+/* Sets the user permission of a user created through the redis module 
+ * interface. The syntax is the sam as ACL SETUSER, so refer to the 
+ * documentation in acl.c for more information. */
+int RM_SetModuleUserACL(RedisModuleUser *user, const char* acl) {
+    return ACLSetUser(user->user, acl, -1);
+}
+
+/* Get's a real ACL User with the corresponding name. This user can
+ * be manipulated by the SetUserACL API and attached to a user by
+ * calling the AuthenticateContextWithUser. Returns NULL if there
+ * is no user with the given name.  */
+RedisModuleUser *RM_GetACLUser(char* name) {
+    user *acl_user = ACLGetUserByName(name, sdslen(name));
+    if (!acl_user) {
+        return NULL;
+    }
+
+    if (!acl_user->module_reference) {
+        RedisModuleUser *module_user = zmalloc(sizeof(RedisModuleUser));
+        module_user->user = acl_user;
+        acl_user->module_reference = module_user;
+    }
+
+    return acl_user->module_reference;
+}
+/* Authenticate the client associated with the current context with
+ * the provided user. */
+int RM_AuthenticateContextWithUser(RedisModuleCtx *ctx, RedisModuleUser *auth_user) {
+    ctx->client->user = auth_user->user;
+    ctx->client->authenticated = 1;
+    return REDISMODULE_OK;
+}
+/* --------------------------------------------------------------------------
  * Modules Dictionary API
  *
  * Implements a sorted dictionary (actually backed by a radix tree) with
@@ -6971,4 +7046,9 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(BlockClientOnKeys);
     REGISTER_API(SignalKeyAsReady);
     REGISTER_API(GetBlockedClientReadyKey);
+    REGISTER_API(CreateModuleUser);
+    REGISTER_API(SetModuleUserACL);
+    REGISTER_API(FreeModuleUser);
+    REGISTER_API(GetACLUser);
+    REGISTER_API(AuthenticateContextWithUser);
 }

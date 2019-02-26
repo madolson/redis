@@ -826,6 +826,9 @@ typedef struct user {
     list *patterns;  /* A list of allowed key patterns. If this field is NULL
                         the user cannot mention any key in a command, unless
                         the flag ALLKEYS is set in the user. */
+    void *module_reference; /* A reference to the module abstraction for this
+                             * user, it's opaque to redis but needs to be
+                             * cleaned up when the user is freed. */
 } user;
 
 /* With multiplexing we need to take per-client state.
@@ -1899,6 +1902,8 @@ int ACLLoadConfiguredUsers(void);
 sds ACLDescribeUser(user *u);
 void ACLLoadUsersAtStartup(void);
 void addReplyCommandCategories(client *c, struct redisCommand *cmd);
+user *ACLCreateUnlinkedUser();
+void ACLFreeUserAndKillClients(user *u);
 
 /* Sorted sets data type */
 

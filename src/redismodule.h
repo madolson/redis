@@ -392,6 +392,7 @@ typedef struct RedisModuleDictIter RedisModuleDictIter;
 typedef struct RedisModuleCommandFilterCtx RedisModuleCommandFilterCtx;
 typedef struct RedisModuleCommandFilter RedisModuleCommandFilter;
 typedef struct RedisModuleInfoCtx RedisModuleInfoCtx;
+typedef struct RedisModuleUser RedisModuleUser;
 
 typedef int (*RedisModuleCmdFunc)(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
 typedef void (*RedisModuleDisconnectFunc)(RedisModuleCtx *ctx, RedisModuleBlockedClient *bc);
@@ -633,6 +634,11 @@ int REDISMODULE_API_FUNC(RedisModule_CommandFilterArgDelete)(RedisModuleCommandF
 int REDISMODULE_API_FUNC(RedisModule_Fork)(RedisModuleForkDoneHandler cb, void *user_data);
 int REDISMODULE_API_FUNC(RedisModule_ExitFromChild)(int retcode);
 int REDISMODULE_API_FUNC(RedisModule_KillForkChild)(int child_pid);
+RedisModuleUser *REDISMODULE_API_FUNC(RedisModule_CreateModuleUser)(const char *name);
+void REDISMODULE_API_FUNC(RedisModule_FreeModuleUser)(RedisModuleUser *user);
+int REDISMODULE_API_FUNC(RedisModule_SetModuleUserACL)(RedisModuleUser *user, const char* acl);
+RedisModuleUser *REDISMODULE_API_FUNC(RedisModule_GetACLUser)(RedisModuleUser *user, const char* acl);
+void REDISMODULE_API_FUNC(RedisModule_AuthenticateContextWithUser)(RedisModuleCtx *ctx, RedisModuleUser *user);
 #endif
 
 #define RedisModule_IsAOFClient(id) ((id) == UINT64_MAX)
@@ -842,6 +848,11 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(Fork);
     REDISMODULE_GET_API(ExitFromChild);
     REDISMODULE_GET_API(KillForkChild);
+    REDISMODULE_GET_API(CreateModuleUser);
+    REDISMODULE_GET_API(FreeModuleUser);
+    REDISMODULE_GET_API(SetModuleUserACL);
+    REDISMODULE_GET_API(GetACLUser);
+    REDISMODULE_GET_API(AuthenticateContextWithUser);
 #endif
 
     if (RedisModule_IsModuleNameBusy && RedisModule_IsModuleNameBusy(name)) return REDISMODULE_ERR;

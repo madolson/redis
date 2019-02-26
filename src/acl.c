@@ -241,6 +241,7 @@ void ACLFreeUser(user *u) {
     listRelease(u->passwords);
     listRelease(u->patterns);
     ACLResetSubcommands(u);
+    if(u->module_reference) zfree(u->module_reference);
     zfree(u);
 }
 
