@@ -266,7 +266,7 @@ typedef struct RedisModuleUser {
 /* The callback function that modules can define instead of using redis ACL authorization */
 typedef RedisModuleUser *(*RedisModulePasswordAuthenticator)(void *user, size_t userlen, void *pass, size_t passlen);
 
-/* Data structures related to password validation*/
+/* Data structures related to password authentication*/
 typedef struct PasswordAuthenticator {
     sds name;
     RedisModulePasswordAuthenticator authFunc;
@@ -4390,7 +4390,7 @@ int RM_CreatePasswordAuthenticator(const char *name, RedisModulePasswordAuthenti
     return REDISMODULE_OK;
 }
 
-/* Removes a password authenticator from the validation chain and frees all of its
+/* Removes a password authenticator from the authentication chain and frees all of its
  * resources except any users it may have created. */
 int RM_RemovePasswordAuthenticator(const char *name) {
     listIter li;
@@ -5172,7 +5172,6 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(DictPrev);
     REGISTER_API(DictCompareC);
     REGISTER_API(DictCompare);
-
     REGISTER_API(CreatePasswordAuthenticator);
     REGISTER_API(RemovePasswordAuthenticator);
     REGISTER_API(CreateUser);
