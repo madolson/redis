@@ -4369,9 +4369,9 @@ int RM_GetTimerInfo(RedisModuleCtx *ctx, RedisModuleTimerID id, uint64_t *remain
  * Implements a hook into the authentication and authorization within Redis. 
  * -------------------------------------------------------------------------- */
 
-/* Create an links a new password authenticator to the authentication chain. Password 
- * authenticators must have a unique name and are evaluated in the order that you add 
- * them to the chain. */
+/* Create an links a new password authenticator to the authentication 
+ * chain. Password authenticators must have a unique name and are evaluated in
+ * the order that you add them to the chain. */
 int RM_CreatePasswordAuthenticator(const char *name, RedisModulePasswordAuthenticator authFunc) {
     listIter li;
     listNode *ln;
@@ -4390,8 +4390,8 @@ int RM_CreatePasswordAuthenticator(const char *name, RedisModulePasswordAuthenti
     return REDISMODULE_OK;
 }
 
-/* Removes a password authenticator from the authentication chain and frees all of its
- * resources except any users it may have created. */
+/* Removes a password authenticator from the authentication chain and frees all
+ * of its resources except any users it may have created. */
 int RM_RemovePasswordAuthenticator(const char *name) {
     listIter li;
     listNode *ln;
@@ -4413,7 +4413,7 @@ int RM_RemovePasswordAuthenticator(const char *name) {
 /* Creates a new user that is unlinked from the main ACL user dictionary. These
  * users behave the same way as those in ACL.c except for a few minor 
  * differences. These users do not exist within a namespace, and handling 
- * duplicate users is the responsiblity of the calling module. These users are
+ * duplicate users is the responsibility of the calling module. These users are
  * also not attached to the redis users dictionary, so they are not returned 
  * via ACL LIST or GETUSER. This also means that users created here must be 
  * updated with the SetUserACL function instead of through ACL SETUSER. */
@@ -4429,7 +4429,7 @@ RedisModuleUser *RM_CreateUser(const char *name) {
 
 /* Frees a given user and disconnects all of the clients that have been
  * authenticated with it. The function should be used when a user is no
- * longer valid as it is the safe way to deauthrize a user. */
+ * longer valid as it is the safe way to authorize a user. */
 void RM_FreeUser(RedisModuleUser *user) {
     ACLFreeUserAndKillClients(user->user);
     zfree(user);
@@ -4442,11 +4442,11 @@ int RM_SetUserACL(RedisModuleUser *user, const char* acl) {
     return ACLSetUser(user->user, acl, -1);
 }
 
-/* Checks all of the password authenticator in order to see if the given username
- * and password are valid. If any combination pair is valid it will return C_OK
- * with the client authenticated with the given client. If the chain is empty or
- * the pair is invalid for all authenticator, it will return C_ERR.
- */
+/* Checks all of the password authenticators to see if the given username
+ * and password are valid with any of them. If any combination pair is valid it 
+ * will return C_OK with the client authenticated with the first valid user. If 
+ * the chain is empty or the pair is invalid for all authenticator, it will 
+ * return C_ERR. */
 int moduleCheckAuthenticationChain(client *client, robj *username, robj *password) {
     listIter li;
     listNode *ln;
