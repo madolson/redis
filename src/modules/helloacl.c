@@ -2,7 +2,7 @@
  *
  * -----------------------------------------------------------------------------
  *
- * Copyright (c) 2019, Amazon Web Services, Inc.
+ * Copyright 2019 Amazon.com, Inc. or its affiliates.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
