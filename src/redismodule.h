@@ -148,6 +148,7 @@ typedef struct RedisModuleClusterInfo RedisModuleClusterInfo;
 typedef struct RedisModuleDict RedisModuleDict;
 typedef struct RedisModuleDictIter RedisModuleDictIter;
 typedef struct RedisModuleUser RedisModuleUser;
+typedef struct RedisModuleUser RedisModuleAuthCtx;
 
 typedef int (*RedisModuleCmdFunc)(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
 typedef void (*RedisModuleDisconnectFunc)(RedisModuleCtx *ctx, RedisModuleBlockedClient *bc);
@@ -160,7 +161,7 @@ typedef void (*RedisModuleTypeDigestFunc)(RedisModuleDigest *digest, void *value
 typedef void (*RedisModuleTypeFreeFunc)(void *value);
 typedef void (*RedisModuleClusterMessageReceiver)(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, const unsigned char *payload, uint32_t len);
 typedef void (*RedisModuleTimerProc)(RedisModuleCtx *ctx, void *data);
-typedef RedisModuleUser *(*RedisModulePasswordAuthenticator)(void *user, size_t userlen, void *pass, size_t passlen);
+typedef void(*RedisModulePasswordAuthenticator)(RedisModuleAuthCtx *ctx, void *user, size_t userlen, void *pass, size_t passlen);
 
 #define REDISMODULE_TYPE_METHOD_VERSION 1
 typedef struct RedisModuleTypeMethods {
@@ -336,6 +337,7 @@ void REDISMODULE_API_FUNC(RedisModule_SetDisconnectCallback)(RedisModuleBlockedC
 void REDISMODULE_API_FUNC(RedisModule_SetClusterFlags)(RedisModuleCtx *ctx, uint64_t flags);
 int REDISMODULE_API_FUNC(RedisModule_CreatePasswordAuthenticator)(const char *name, RedisModulePasswordAuthenticator authFunc);
 int REDISMODULE_API_FUNC(RedisModule_RemovePasswordAuthenticator)(const char *name);
+int REDISMODULE_API_FUNC(RedisModule_AuthorizeContextWithUser)(RedisModuleAuthCtx *ctx, RedisModuleUser *user);
 RedisModuleUser *REDISMODULE_API_FUNC(RedisModule_CreateUser)(const char *name);
 void REDISMODULE_API_FUNC(RedisModule_FreeUser)(RedisModuleUser *user);
 int REDISMODULE_API_FUNC(RedisModule_SetUserACL)(RedisModuleUser *user, const char* acl);
@@ -504,6 +506,7 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(CreateUser);
     REDISMODULE_GET_API(FreeUser);
     REDISMODULE_GET_API(SetUserACL);
+    REDISMODULE_GET_API(AuthorizeContextWithUser);
 #endif
 
     if (RedisModule_IsModuleNameBusy && RedisModule_IsModuleNameBusy(name)) return REDISMODULE_ERR;

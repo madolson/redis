@@ -263,8 +263,15 @@ typedef struct RedisModuleUser {
     user *user;
 } RedisModuleUser;
 
+/* Data structure that tracks the state of a client authentication outside of the module
+ * authentication. This is useful for tracking authentication that is happening on a 
+ * remote service and shouldn't block the main process. */
+typedef struct RedisModuleAuthCtx {
+    client *client;
+} RedisModuleAuthCtx;
+
 /* The callback function that modules can define instead of using redis ACL authorization */
-typedef RedisModuleUser *(*RedisModulePasswordAuthenticator)(void *user, size_t userlen, void *pass, size_t passlen);
+typedef RedisModuleUser *(*RedisModulePasswordAuthenticator)(RedisModuleAuthCtx *ctx, void *user, size_t userlen, void *pass, size_t passlen);
 
 /* Data structures related to password authentication*/
 typedef struct PasswordAuthenticator {
@@ -4367,7 +4374,18 @@ int RM_GetTimerInfo(RedisModuleCtx *ctx, RedisModuleTimerID id, uint64_t *remain
  * Modules ACL API
  *
  * Implements a hook into the authentication and authorization within Redis. 
- * -------------------------------------------------------------------------- */
+ * --------------------------------------------------------------------------*/
+/* Create an initialize an authentication context. */
+static RedisModuleAuthCtx * createRedisModuleAuthCtx(client *c) {
+    RedisModuleAuthCtx *ctx = zmalloc(sizeof(*ctx));
+    ctx->client = c;
+    return ctx;
+}
+
+/* Release an authentication context. */
+static void freeRedisModuleAuthCtx(RedisModuleAuthCtx *ctx) {
+    zfree(ctx);
+}
 
 /* Create an links a new password authenticator to the authentication 
  * chain. Password authenticators must have a unique name and are evaluated in
@@ -4377,12 +4395,12 @@ int RM_CreatePasswordAuthenticator(const char *name, RedisModulePasswordAuthenti
     listNode *ln;
     listRewind(moduleAuthenticationChain, &li);
     while((ln = listNext(&li))) {
-        PasswordAuthenticator *authenticator = (PasswordAuthenticator *) ln->value;
-        if(!strcmp(name, authenticator->name))
+        PasswordAuthenticator *auth = (PasswordAuthenticator *) ln->value;
+        if(!strcmp(name, auth->name))
             return REDISMODULE_ERR;
     }
 
-    PasswordAuthenticator *authenticator = zmalloc(sizeof(PasswordAuthenticator));
+    PasswordAuthenticator *authenticator = zmalloc(sizeof(*authenticator));
     authenticator->name = sdsnew(name);
     authenticator->authFunc = authFunc;
 
@@ -4418,7 +4436,7 @@ int RM_RemovePasswordAuthenticator(const char *name) {
  * via ACL LIST or GETUSER. This also means that users created here must be 
  * updated with the SetUserACL function instead of through ACL SETUSER. */
 RedisModuleUser *RM_CreateUser(const char *name) {
-    RedisModuleUser *newuser = zmalloc(sizeof(RedisModuleUser));
+    RedisModuleUser *newuser = zmalloc(sizeof(*newuser));
     newuser->user = ACLCreateUnlinkedUser();
 
     /* Free the previous temporarily assigned name to assign the new one */
@@ -4442,6 +4460,22 @@ int RM_SetUserACL(RedisModuleUser *user, const char* acl) {
     return ACLSetUser(user->user, acl, -1);
 }
 
+/* Sets the user permission of a user created through the redis module 
+ * interface. The syntax is the sam as ACL SETUSER, so refer to the 
+ * documentation in acl.c for more information. */
+int RM_SetUserACL(RedisModuleUser *user, const char* acl) {
+    return ACLSetUser(user->user, acl, -1);
+}
+
+/* Authorize an authentication context with the given user. An 
+ * authentication is mapped to an underlying client. This method
+ * must currently be called within the auth callback but will
+ * changed later to be callable within a threadsafe context. */
+void RM_AuthorizeContextWithUser(RedisModuleAuthCtx *ctx, RedisModuleUser *authuser) {
+    ctx->client->user = authuser->user;
+    ctx->client->authenticated = 1;
+}
+
 /* Checks all of the password authenticators to see if the given username
  * and password are valid with any of them. If any combination pair is valid it 
  * will return C_OK with the client authenticated with the first valid user. If 
@@ -4454,11 +4488,15 @@ int moduleCheckAuthenticationChain(client *client, robj *username, robj *passwor
     listRewind(moduleAuthenticationChain, &li);
     while((ln = listNext(&li))) {
         PasswordAuthenticator *authenticator = ln->value;
-        RedisModuleUser *authuser = authenticator->authFunc(username->ptr, 
+        
+        // This auth context is always destroyed here, but this code will 
+        // be updated to allow for authorizing outside of this function.
+        RedisModuleAuthCtx *ctx = createRedisModuleAuthCtx(client);
+        authenticator->authFunc(ctx, username->ptr, 
             sdslen(username->ptr), password->ptr, sdslen(password->ptr));
-        if (authuser) {
-            client->user = authuser->user;
-            client->authenticated = 1;
+        freeRedisModuleAuthCtx(ctx);
+
+        if (client->authenticated == 1) {
             return C_OK;
         }
     }
@@ -5177,4 +5215,5 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(CreateUser);
     REGISTER_API(FreeUser);
     REGISTER_API(SetUserACL);
+    REGISTER_API(AuthorizeContextWithUser);
 }

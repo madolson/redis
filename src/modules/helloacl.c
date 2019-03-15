@@ -42,15 +42,14 @@
 static RedisModuleUser *global;
 
 /* Check that the password is "password" for any user */
-RedisModuleUser *HelloACL_CheckPassword(void *user, size_t userlen, void *pass, size_t passlen) {
+void HelloACL_CheckPassword(RedisModuleAuthCtx *ctx, void *user, size_t userlen, void *pass, size_t passlen) {
     REDISMODULE_NOT_USED(user);
     REDISMODULE_NOT_USED(userlen);
     REDISMODULE_NOT_USED(passlen);
 
     if(!strcmp(pass, "password")){
-        return global;
+        RedisModule_AuthorizeContextWithUser(ctx, global);
     }
-    return NULL;
 }
 
 /* HELLOACL.RESET */
