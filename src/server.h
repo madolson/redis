@@ -66,9 +66,7 @@ typedef long long mstime_t; /* millisecond time type. */
 #include "quicklist.h"  /* Lists are encoded as linked lists of
                            N-elements flat arrays */
 #include "rax.h"     /* Radix tree */
-#ifdef BUILD_SSL
 #include "ssl.h"
-#endif
 
 /* Following includes allow test functions to be called from Redis main() */
 #include "zipmap.h"
@@ -330,9 +328,8 @@ typedef long long mstime_t; /* millisecond time type. */
 #define REPL_STATE_RECEIVE_CAPA 11 /* Wait for REPLCONF reply */
 #define REPL_STATE_SEND_PSYNC 12 /* Send PSYNC */
 #define REPL_STATE_RECEIVE_PSYNC 13 /* Wait for PSYNC reply */
-#ifdef BUILD_SSL
 #define REPL_STATE_SSL_HANDSHAKE 999 /* Waiting in SSL handshake */
-#endif
+
 /* --- End of handshake states --- */
 #define REPL_STATE_TRANSFER 14 /* Receiving .rdb from master */
 #define REPL_STATE_CONNECTED 15 /* Connected to master */
@@ -502,6 +499,7 @@ typedef long long mstime_t; /* millisecond time type. */
 }\
 close((fd))
 #define isSSLEnabled() server.ssl_config.enable_ssl
+#define isSSLCompiled() 1
 #else
 #define rstrerror(errno) strerror(errno)
 #define rread(fd, buffer, bytes) read((fd), (buffer), (bytes))
@@ -509,6 +507,7 @@ close((fd))
 #define rping(fd) write((fd), "\n", 1)
 #define rclose(fd) close((fd))
 #define isSSLEnabled() 0
+#define isSSLCompiled() 0
 #endif
 
 /*-----------------------------------------------------------------------------
@@ -1397,9 +1396,7 @@ struct redisServer {
 
     char *cluster_announce_endpoint; /* Endpoint address to announce on cluster bus, only for ssl enabled */
     cluster_interface_type client_cluster_interface_type; /* Which endpoint to show to clients, only for ssl enabled */
-#ifdef BUILD_SSL
     ssl_t ssl_config; /* SSL configuration */
-#endif
 };
 
 typedef struct pubsubPattern {

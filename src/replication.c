@@ -30,9 +30,7 @@
 
 
 #include "server.h"
-#ifdef BUILD_SSL
 #include "ssl.h"
-#endif
 
 #include <sys/time.h>
 #include <unistd.h>
@@ -975,19 +973,13 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
                 slave->replstate = SLAVE_STATE_ONLINE;
                 slave->repl_put_online_on_ack = 1;
                 slave->repl_ack_time = server.unixtime; /* Timeout otherwise. */
-                do {
-#ifdef BUILD_SSL
-                    if (server.ssl_config.enable_ssl == true) {
-                        startWaitForSlaveToLoadRdbAfterRdbTransfer(slave);
-                        break;
-                    }
-#endif
+                if (isSSLEnabled()) {
+                    startWaitForSlaveToLoadRdbAfterRdbTransfer(slave);
+                } else {
                     serverLog(LL_NOTICE,
                         "Streamed RDB transfer with slave %s succeeded (socket). Waiting for REPLCONF ACK from slave to enable streaming",
-                        replicationGetSlaveName(slave));
-                } while(0);
-
-
+                        replicationGetSlaveName(slave));              
+                }
             } else {
                 if (bgsaveerr != C_OK) {
                     freeClient(slave);
@@ -1059,11 +1051,9 @@ void shiftReplicationId(void) {
 /* Returns 1 if the given replication state is a handshake state,
  * 0 otherwise. */
 int slaveIsInHandshakeState(void) {
-#ifdef BUILD_SSL
     if (server.repl_state == REPL_STATE_SSL_HANDSHAKE){
-        return true;
+        return 1;
     }
-#endif
     return server.repl_state >= REPL_STATE_RECEIVE_PONG &&
         server.repl_state <= REPL_STATE_RECEIVE_PSYNC;
 }
@@ -1213,10 +1203,11 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
 
     nread = rread(fd,buf,readlen);
     if (nread <= 0) {
-#ifdef BUILD_SSL
-        // May need to read more data from S2N
+
+        // May need to read more data from SSL if we didn't read an entire
+        // frame
         if (nread < 0 && errno == EAGAIN) return;
-#endif
+
         serverLog(LL_WARNING,"I/O error trying to sync with MASTER: %s",
             (nread == -1) ? rstrerror(errno) : "connection lost");
         cancelReplicationHandshake();
@@ -1325,24 +1316,21 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
         zfree(server.repl_transfer_tmpfile);
         close(server.repl_transfer_fd);
 
-        do {
-            if (aof_is_enabled) restartAOFAfterSYNC();
+        if (aof_is_enabled) restartAOFAfterSYNC();
 
-            server.master_replication_rdb_save_info = zmalloc(sizeof(rdbSaveInfo));
-            memcpy(server.master_replication_rdb_save_info, &rsi, sizeof(rdbSaveInfo));
-#ifdef BUILD_SSL
+        server.master_replication_rdb_save_info = zmalloc(sizeof(rdbSaveInfo));
+        memcpy(server.master_replication_rdb_save_info, &rsi, sizeof(rdbSaveInfo));
+
+        if (isSSLEnabled()) {
             // We need to re-negotiate with master on a socket based bgsave when ssl is
             // enabled.
-            int renegotiatieSsl = (usemark == true && server.ssl_config.enable_ssl == true);
-
-            if (renegotiatieSsl == true) {
+            if (usemark) {
                 server.repl_state = REPL_STATE_SSL_HANDSHAKE;
                 startSslNegotiateWithMasterAfterRdbLoad(fd);
-                break;
-            }
-#endif
+            }          
+        } else {
             finishSyncAfterReceivingBulkPayloadOnSlave();
-        } while(0);
+        }
     }
     return;
 error:
@@ -1949,8 +1937,8 @@ int connectWithMaster(void) {
             strerror(errno));
         return C_ERR;
     }
-    do {
-#ifdef BUILD_SSL
+
+    if (isSSLEnabled()) {
         if (server.ssl_config.enable_ssl == true) {
             if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
                             server.ssl_config.ssl_performance_mode,server.masterhost,
@@ -1965,25 +1953,19 @@ int connectWithMaster(void) {
                 cleanupSslConnectionForFd(fd);
                 goto error;
             }
-            break;
-        }
-#endif
-
+        }     
+    } else {
         if (aeCreateFileEvent(server.el,fd,AE_READABLE|AE_WRITABLE,syncWithMaster,NULL) ==
         AE_ERR)
         {
             serverLog(LL_WARNING,"Can't create readable event for SYNC");
             goto error;
-        }
-    } while(0);
+        }  
+    }
 
     server.repl_transfer_lastio = server.unixtime;
     server.repl_transfer_s = fd;
-#ifdef BUILD_SSL
-    server.repl_state = server.ssl_config.enable_ssl == true ? REPL_STATE_SSL_HANDSHAKE: REPL_STATE_CONNECTING;
-#else
-    server.repl_state = REPL_STATE_CONNECTING;
-#endif
+    server.repl_state = server.ssl_config.enable_ssl ? REPL_STATE_SSL_HANDSHAKE: REPL_STATE_CONNECTING;
     return C_OK;
 error:
     close(fd);
@@ -2029,12 +2011,10 @@ int cancelReplicationHandshake(void) {
                slaveIsInHandshakeState())
     {
         undoConnectWithMaster();        
-#ifdef BUILD_SSL
         if (server.master_replication_rdb_save_info) {
             zfree(server.master_replication_rdb_save_info);
             server.master_replication_rdb_save_info = NULL;  
         }
-#endif
         server.repl_state = REPL_STATE_CONNECT;
     } else {
         return 0;

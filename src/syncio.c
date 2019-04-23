@@ -79,13 +79,11 @@ ssize_t syncWrite(int fd, char *ptr, ssize_t size, long long timeout) {
     }
 }
 
-#ifdef BUILD_SSL
 int isFdSocket(int fd) {
     struct stat statbuf;
     fstat(fd, &statbuf);
     return S_ISSOCK(statbuf.st_mode);
 }
-#endif
 
 /* Read the specified amount of bytes from 'fd'. If all the bytes are read
  * within 'timeout' milliseconds the operation succeed and 'size' is returned.
@@ -104,16 +102,14 @@ ssize_t syncRead(int fd, char *ptr, ssize_t size, long long timeout) {
 
         /* Optimistically try to read before checking if the file descriptor
          * is actually readable. At worst we get EAGAIN. */
-#ifdef BUILD_SSL
-        // Only use SSL if reading from a socket
-        if (isFdSocket(fd)) {
+
+        if (isSSLEnabled() && isFdSocket(fd)) {
+            // Only use SSL if reading from a socket
             nread = rread(fd,ptr,size);
         } else {
             nread = read(fd,ptr,size);
         }
-        #else
-        nread = rread(fd,ptr,size);
-#endif
+
         if (nread == 0) return -1; /* short read. */
         if (nread == -1) {
             if (errno != EAGAIN) return -1;

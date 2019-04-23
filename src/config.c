@@ -30,9 +30,7 @@
 
 #include "server.h"
 #include "cluster.h"
-#ifdef BUILD_SSL
 #include "ssl.h"
-#endif
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -878,31 +876,34 @@ void loadServerConfigFromString(char *config) {
                 err = sentinelHandleConfiguration(argv+1,argc-1);
                 if (err) goto loaderr;
             }
-#ifdef BUILD_SSL
         } else if (!strcasecmp(argv[0],"enable-ssl") && argc == 2) {
+            if (!isSSLCompiled()) {
+                err = "SSL must be compiled into redis to be enabled";
+                goto loaderr;            
+            }
             if ((server.ssl_config.enable_ssl = yesnotoi(argv[1])) == -1) {
                 err = "argument must be 'yes' or 'no'";
                 goto loaderr;
             }
-        } else if (!strcasecmp(argv[0],"certificate-file") && argc == 2) {
+        } else if (!strcasecmp(argv[0],"certificate-file") && isSSLCompiled() && argc == 2) {
             server.ssl_config.ssl_certificate_file = zstrdup(argv[1]);
             if(loadFile(server.ssl_config.ssl_certificate_file, &server.ssl_config.ssl_certificate) == -1){
                 err = "Error loading ssl certificate file";
                 goto loaderr;
             }
-        } else if (!strcasecmp(argv[0],"private-key-file") && argc == 2) {
+        } else if (!strcasecmp(argv[0],"private-key-file") && isSSLCompiled() && argc == 2) {
             server.ssl_config.ssl_certificate_private_key_file = zstrdup(argv[1]);
             if(loadFile(server.ssl_config.ssl_certificate_private_key_file, &server.ssl_config.ssl_certificate_private_key) == -1){
                 err = "Error loading private key file";
                 goto loaderr;
             }
-        } else if (!strcasecmp(argv[0],"dh-params-file") && argc == 2) {
+        } else if (!strcasecmp(argv[0],"dh-params-file") && isSSLCompiled() && argc == 2) {
             server.ssl_config.ssl_dh_params_file = zstrdup(argv[1]);
             if(loadFile(server.ssl_config.ssl_dh_params_file, &server.ssl_config.ssl_dh_params) == -1){
                 err = "Error loading Diffie Hellman parameters file";
                 goto loaderr;
             }
-        } else if (!strcasecmp(argv[0],"root-ca-certs-path") && argc == 2) {
+        } else if (!strcasecmp(argv[0],"root-ca-certs-path") && isSSLCompiled() && argc == 2) {
             server.ssl_config.root_ca_certs_path = zstrdup(argv[1]);
             // Verification of the path performed below
         } else if (!strcasecmp(argv[0],"ssl-performance-mode") && argc == 2) {
@@ -933,7 +934,6 @@ void loadServerConfigFromString(char *config) {
                 err = "Invalid dns name specified for cluster-announce-endpoint";
                 goto loaderr;
             }
-#endif
         } else {
             err = "Bad directive or wrong number of arguments"; goto loaderr;
         }
@@ -947,8 +947,8 @@ void loadServerConfigFromString(char *config) {
         err = "replicaof directive not allowed in cluster mode";
         goto loaderr;
     }
-#ifdef BUILD_SSL
-    if(server.ssl_config.enable_ssl == true){
+
+    if (isSSLEnabled()) {
         if(server.ssl_config.ssl_certificate == NULL) {
             err = "certificate-file is not provided in arguments";
             goto loaderr;
@@ -979,7 +979,6 @@ void loadServerConfigFromString(char *config) {
     }else{
         server.client_cluster_interface_type = CLUSTER_INTERFACE_TYPE_IP;
     }
-#endif
 
     sdsfreesplitres(lines,totlines);
     return;
@@ -1118,17 +1117,14 @@ void configSetCommand(client *c) {
             }
             unsigned int newsize = server.maxclients + CONFIG_FDSET_INCR;
             if ((unsigned int) aeGetSetSize(server.el) < newsize) {
-#ifdef BUILD_SSL
-
                 //Preemptively check that if SSL api is able to accommodate this change request
-                if (server.ssl_config.enable_ssl == true &&
-                    isResizeAllowed(server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size, newsize) ==
-                    false) {
+                if (isSSLEnabled() &&
+                        !isResizeAllowed(server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size, newsize)) {
                     addReplyError(c, "The SSL API used by Redis is not able to handle the specified number of clients");
                     server.maxclients = orig_value;
                     return;
                 }
-#endif                            
+
                 if (aeResizeSetSize(server.el,
                     server.maxclients + CONFIG_FDSET_INCR) == AE_ERR)
                 {
@@ -1137,12 +1133,13 @@ void configSetCommand(client *c) {
                     return;
                 }
             }
-#ifdef BUILD_SSL            
-            if(server.ssl_config.fd_to_sslconn_size < newsize) {
-                //we expect this to always succeed because we have already done the success check before
-                serverAssert(resizeFdToSslConnSize(&server.ssl_config, newsize) == C_OK);
-            }
-#endif            
+
+            if (isSSLEnabled()) {
+                if(server.ssl_config.fd_to_sslconn_size < newsize) {
+                    //we expect this to always succeed because we have already done the success check before
+                    serverAssert(resizeFdToSslConnSize(&server.ssl_config, newsize) == C_OK);
+                }            
+            }       
         }
     } config_set_special_field("appendonly") {
         int enable = yesnotoi(o->ptr);
@@ -1247,9 +1244,8 @@ void configSetCommand(client *c) {
 
         if (flags == -1) goto badfmt;
         server.notify_keyspace_events = flags;
-#ifdef BUILD_SSL
     } config_set_special_field("ssl-renew-certificate") {
-        if(server.ssl_config.enable_ssl == false) {
+        if(!isSSLEnabled()) {
             addReplyError(c, "This command is not available when SSL is disabled");
             return;
         }
@@ -1335,7 +1331,6 @@ ssl_renew_error:
             goto badfmt;
         }
         server.client_cluster_interface_type = interface_type;
-#endif
     } config_set_special_field_with_alias("slave-announce-ip",
                                           "replica-announce-ip")
     {
@@ -1753,7 +1748,6 @@ void configGetCommand(client *c) {
             server.dynamic_hz);
 
 
-#ifdef BUILD_SSL
     /* SSL related configuration */
     config_get_bool_field("enable-ssl",server.ssl_config.enable_ssl);
     config_get_string_field("certificate-file", server.ssl_config.ssl_certificate_file);
@@ -1761,7 +1755,6 @@ void configGetCommand(client *c) {
     config_get_string_field("dh-params-file",server.ssl_config.ssl_dh_params_file);
     config_get_string_field("root-ca-certs-path",server.ssl_config.root_ca_certs_path);
     config_get_string_field("ssl-performance-mode", getSslPerformanceModeStr(server.ssl_config.ssl_performance_mode));
-#endif
 
     /* Enum values */
     config_get_enum_field("maxmemory-policy",
@@ -2581,7 +2574,6 @@ int rewriteConfig(char *path) {
     rewriteConfigYesNoOption(state,"replica-lazy-flush",server.repl_slave_lazy_flush,CONFIG_DEFAULT_SLAVE_LAZY_FLUSH);
     rewriteConfigYesNoOption(state,"dynamic-hz",server.dynamic_hz,CONFIG_DEFAULT_DYNAMIC_HZ);
 
-#ifdef BUILD_SSL
     //SSL related configuration
     rewriteConfigYesNoOption(state, "enable-ssl", server.ssl_config.enable_ssl, SSL_ENABLE_DEFAULT);
     rewriteConfigStringOption(state, "certificate-file", server.ssl_config.ssl_certificate_file, NULL);
@@ -2589,7 +2581,6 @@ int rewriteConfig(char *path) {
     rewriteConfigStringOption(state, "dh-params-file", server.ssl_config.ssl_dh_params_file, NULL);
     rewriteConfigStringOption(state, "root-ca-certs-path", server.ssl_config.root_ca_certs_path, NULL);
     rewriteConfigStringOption(state, "ssl-performance-mode", getSslPerformanceModeStr(server.ssl_config.ssl_performance_mode), NULL);
-#endif
 
     /* Rewrite Sentinel config if in Sentinel mode. */
     if (server.sentinel_mode) rewriteConfigSentinelOption(state);

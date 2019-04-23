@@ -33,9 +33,7 @@
 #include "bio.h"
 #include "latency.h"
 #include "atomicvar.h"
-#ifdef BUILD_SSL
 #include "ssl.h"
-#endif
 
 #include <time.h>
 #include <signal.h>
@@ -2320,9 +2318,8 @@ void initServerConfig(void) {
     server.client_cluster_interface_type = CLUSTER_INTERFACE_TYPE_IP;
     server.cluster_announce_endpoint = NULL;
     server.master_replication_rdb_save_info = NULL;
-#ifdef BUILD_SSL
+
     initSslConfigDefaults(&server.ssl_config);;
-#endif
 
     unsigned int lruclock = getLRUClock();
     atomicSet(server.lruclock,lruclock);
@@ -2742,9 +2739,8 @@ void initServer(void) {
     }
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
 
-#ifdef BUILD_SSL
     initSsl(&server.ssl_config);
-#endif
+
     /* Open the TCP listening socket for the user commands. */
     if (server.port != 0 &&
         listenToPort(server.port,server.ipfd,&server.ipfd_count) == C_ERR)
@@ -3581,10 +3577,10 @@ int prepareForShutdown(int flags) {
 
     /* Close the listening sockets. Apparently this allows faster restarts. */
     closeListeningSockets(1);
-#ifdef BUILD_SSL
+
     /* Clean up any resources used for SSL */
     cleanupSsl(&server.ssl_config);
-#endif
+
     serverLog(LL_WARNING,"%s is now ready to exit, bye bye...",
         server.sentinel_mode ? "Sentinel" : "Redis");
     return C_OK;
@@ -4326,14 +4322,16 @@ sds genRedisInfoString(char *section) {
         }
         dictReleaseIterator(di);
     }
-
-#ifdef BUILD_SSL
     /* SSL Statistics */
     if (allsections || defsections || (!strcasecmp(section,"ssl"))) {
-        if (sections++) info = sdscat(info,"\r\n");
-        if (server.ssl_config.enable_ssl == true) {
+        if (sections++) info = sdscat(info,"\r\n# SSL\r\n");
+        if (isSSLCompiled()) {
+            info = sdscatprintf(info, "ssl_compiled:yes\r\n");
+        } else {
+            info = sdscatprintf(info, "ssl_compiled:no\r\n");
+        }
+        if (isSSLEnabled()) {
             info = sdscatprintf(info,
-                "# SSL\r\n"
                     "ssl_enabled:%s\r\n"
                     "ssl_connections_to_previous_certificate:%d\r\n"
                     "ssl_connections_to_current_certificate:%d\r\n"
@@ -4368,10 +4366,9 @@ sds genRedisInfoString(char *section) {
                 server.ssl_config.max_repeated_read_list_length
             );
         } else {
-            info = sdscatprintf(info, "# SSL\r\nssl_enabled:no\r\n");
+            info = sdscatprintf(info, "ssl_enabled:no\r\n");
         }
     }
-#endif
 
     /* Cluster */
     if (allsections || defsections || !strcasecmp(section,"cluster")) {
