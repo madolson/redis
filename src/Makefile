@@ -77,6 +77,20 @@ FINAL_LDFLAGS=$(LDFLAGS) $(REDIS_LDFLAGS) $(DEBUG)
 FINAL_LIBS=-lm
 DEBUG=-g -ggdb
 
+# SSL Build configuration
+ifeq ($(BUILD_SSL),yes)
+	S2N_INCLUDE_DIR ?= ../deps/s2n/api
+	S2N_LIB_DIR ?= ../deps/s2n/lib
+	OPENSSL_INCLUDE_DIR ?= ../deps/openssl/include
+	OPENSSL_LIB_DIR ?= ../deps/openssl
+
+	SSL_TARGETS = openssl s2n
+
+	FINAL_CFLAGS += $(addprefix -I,$(S2N_INCLUDE_DIR)) $(addprefix -I,$(OPENSSL_INCLUDE_DIR)) $(addprefix -D,BUILD_SSL) 
+	FINAL_LDFLAGS += $(addprefix -L,$(S2N_LIB_DIR)) $(addprefix -L,$(OPENSSL_LIB_DIR))
+	FINAL_LIBS += $(S2N_LIB_DIR)/libs2n.a -lrt $(OPENSSL_LIB_DIR)/libssl.a $(OPENSSL_LIB_DIR)/libcrypto.a
+endif
+
 ifeq ($(uname_S),SunOS)
 	# SunOS
         ifneq ($(@@),32bit)
@@ -145,6 +159,8 @@ ifeq ($(MALLOC),jemalloc)
 	FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a $(FINAL_LIBS)
 endif
 
+FINAL_TARGETS = $(SSL_TARGETS) $(DEPENDENCY_TARGETS)
+
 REDIS_CC=$(QUIET_CC)$(CC) $(FINAL_CFLAGS)
 REDIS_LD=$(QUIET_LINK)$(CC) $(FINAL_LDFLAGS)
 REDIS_INSTALL=$(QUIET_INSTALL)$(INSTALL)
@@ -172,6 +188,11 @@ REDIS_BENCHMARK_OBJ=ae.o anet.o redis-benchmark.o adlist.o dict.o zmalloc.o siph
 REDIS_CHECK_RDB_NAME=redis-check-rdb
 REDIS_CHECK_AOF_NAME=redis-check-aof
 
+# Add SSL objects to final build
+ifeq ($(BUILD_SSL),yes)
+	REDIS_SERVER_OBJ+=ssl.o
+endif
+
 all: $(REDIS_SERVER_NAME) $(REDIS_SENTINEL_NAME) $(REDIS_CLI_NAME) $(REDIS_BENCHMARK_NAME) $(REDIS_CHECK_RDB_NAME) $(REDIS_CHECK_AOF_NAME)
 	@echo ""
 	@echo "Hint: It's a good idea to run 'make test' ;)"
@@ -197,7 +218,7 @@ persist-settings: distclean
 	echo REDIS_LDFLAGS=$(REDIS_LDFLAGS) >> .make-settings
 	echo PREV_FINAL_CFLAGS=$(FINAL_CFLAGS) >> .make-settings
 	echo PREV_FINAL_LDFLAGS=$(FINAL_LDFLAGS) >> .make-settings
-	-(cd ../deps && $(MAKE) $(DEPENDENCY_TARGETS))
+	-(cd ../deps && $(MAKE) $(FINAL_TARGETS))
 
 .PHONY: persist-settings
 
@@ -260,6 +281,12 @@ distclean: clean
 
 test: $(REDIS_SERVER_NAME) $(REDIS_CHECK_AOF_NAME)
 	@(cd ..; ./runtest)
+
+test-ssl: $(REDIS_SERVER_NAME) $(REDIS_CHECK_AOF_NAME)
+	@(cd ..; ./runtest --ssl)
+
+test-cluster-ssl: $(REDIS_SERVER_NAME) $(REDIS_CHECK_AOF_NAME)
+	@(cd ..; ./runtest-cluster --ssl)
 
 test-sentinel: $(REDIS_SENTINEL_NAME)
 	@(cd ..; ./runtest-sentinel)

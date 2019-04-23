@@ -29,6 +29,9 @@
 
 #include "server.h"
 #include "atomicvar.h"
+#ifdef BUILD_SSL
+#include "ssl.h"
+#endif
 #include <sys/uio.h>
 #include <math.h>
 #include <ctype.h>
@@ -94,13 +97,36 @@ client *createClient(int fd) {
         anetEnableTcpNoDelay(NULL,fd);
         if (server.tcpkeepalive)
             anetKeepAlive(NULL,fd,server.tcpkeepalive);
-        if (aeCreateFileEvent(server.el,fd,AE_READABLE,
-            readQueryFromClient, c) == AE_ERR)
-        {
-            close(fd);
-            zfree(c);
-            return NULL;
-        }
+        do {
+#ifdef BUILD_SSL
+            if (server.ssl_config.enable_ssl == true) {
+                if ((unsigned int)fd < server.ssl_config.fd_to_sslconn_size && server.ssl_config.fd_to_sslconn[fd] != NULL) {
+                    // SSL is already established, just setup the event to read from client
+                    aeDeleteFileEvent(server.el, fd, AE_READABLE|AE_WRITABLE);
+                    if (aeCreateFileEvent(server.el, fd, AE_READABLE, readQueryFromClient, c) == AE_ERR) {
+                        close(fd);
+                        zfree(c);
+                        return NULL;                        
+                    }
+                }else{
+                    if (setupSslOnClient(c, fd, server.ssl_config.ssl_performance_mode, server.ssl_config.fd_to_sslconn,
+                            server.ssl_config.fd_to_sslconn_size) == C_ERR) {
+                        close(fd);
+                        zfree(c);
+                        return NULL;
+                    }
+                }
+                break;
+            }
+#endif
+            if (aeCreateFileEvent(server.el,fd,AE_READABLE,
+                readQueryFromClient, c) == AE_ERR)
+            {
+                close(fd);
+                zfree(c);
+                return NULL;
+            }
+        } while(0);
     }
 
     selectDb(c,0);
@@ -790,6 +816,15 @@ static void acceptCommonHandler(int fd, int flags, char *ip) {
      * for this condition, since now the socket is already set in non-blocking
      * mode and we can send an error for free using the Kernel I/O */
     if (listLength(server.clients) > server.maxclients) {
+#ifdef BUILD_SSL
+        if(server.ssl_config.enable_ssl == true){
+            // If SSL is enabled we send nothing to the client since handshake isn't
+            // done yet, we just kill it
+            server.stat_rejected_conn++;
+            freeClient(c);
+            return;
+        }
+#endif
         char *err = "-ERR max number of clients reached\r\n";
 
         /* That's a best effort error message, don't check write errors */
@@ -812,6 +847,15 @@ static void acceptCommonHandler(int fd, int flags, char *ip) {
         ip != NULL)
     {
         if (strcmp(ip,"127.0.0.1") && strcmp(ip,"::1")) {
+#ifdef BUILD_SSL
+            if(server.ssl_config.enable_ssl == true){
+                // If SSL is enabled we send nothing to the client since handshake isn't
+                // done yet, we just kill it.
+                server.stat_rejected_conn++;
+                freeClient(c);
+                return;
+            }
+#endif
             char *err =
                 "-DENIED Redis is running in protected mode because protected "
                 "mode is enabled, no bind address was specified, no "
@@ -937,7 +981,7 @@ void unlinkClient(client *c) {
         /* Unregister async I/O handlers and close the socket. */
         aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
         aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
-        close(c->fd);
+        rclose(c->fd);
         c->fd = -1;
     }
 
@@ -1098,7 +1142,7 @@ int writeToClient(int fd, client *c, int handler_installed) {
 
     while(clientHasPendingReplies(c)) {
         if (c->bufpos > 0) {
-            nwritten = write(fd,c->buf+c->sentlen,c->bufpos-c->sentlen);
+            nwritten = rwrite(fd,c->buf+c->sentlen,c->bufpos-c->sentlen);
             if (nwritten <= 0) break;
             c->sentlen += nwritten;
             totwritten += nwritten;
@@ -1119,7 +1163,7 @@ int writeToClient(int fd, client *c, int handler_installed) {
                 continue;
             }
 
-            nwritten = write(fd, o->buf + c->sentlen, objlen - c->sentlen);
+            nwritten = rwrite(fd, o->buf + c->sentlen, objlen - c->sentlen);
             if (nwritten <= 0) break;
             c->sentlen += nwritten;
             totwritten += nwritten;
@@ -1158,7 +1202,7 @@ int writeToClient(int fd, client *c, int handler_installed) {
             nwritten = 0;
         } else {
             serverLog(LL_VERBOSE,
-                "Error writing to client: %s", strerror(errno));
+                "Error writing to client: %s", rstrerror(errno));
             freeClient(c);
             return C_ERR;
         }
@@ -1668,12 +1712,12 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     qblen = sdslen(c->querybuf);
     if (c->querybuf_peak < qblen) c->querybuf_peak = qblen;
     c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
-    nread = read(fd, c->querybuf+qblen, readlen);
+    nread = rread(fd, c->querybuf+qblen, readlen);
     if (nread == -1) {
         if (errno == EAGAIN) {
             return;
         } else {
-            serverLog(LL_VERBOSE, "Reading from client: %s",strerror(errno));
+            serverLog(LL_VERBOSE, "Reading from client: %s", rstrerror(errno));
             freeClient(c);
             return;
         }

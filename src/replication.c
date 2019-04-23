@@ -30,6 +30,9 @@
 
 
 #include "server.h"
+#ifdef BUILD_SSL
+#include "ssl.h"
+#endif
 
 #include <sys/time.h>
 #include <unistd.h>
@@ -431,7 +434,7 @@ int replicationSetupSlaveForFullResync(client *slave, long long offset) {
     if (!(slave->flags & CLIENT_PRE_PSYNC)) {
         buflen = snprintf(buf,sizeof(buf),"+FULLRESYNC %s %lld\r\n",
                           server.replid,offset);
-        if (write(slave->fd,buf,buflen) != buflen) {
+        if (rwrite(slave->fd,buf,buflen) != buflen) {
             freeClientAsync(slave);
             return C_ERR;
         }
@@ -518,7 +521,7 @@ int masterTryPartialResynchronization(client *c) {
     } else {
         buflen = snprintf(buf,sizeof(buf),"+CONTINUE\r\n");
     }
-    if (write(c->fd,buf,buflen) != buflen) {
+    if (rwrite(c->fd,buf,buflen) != buflen) {
         freeClientAsync(c);
         return C_OK;
     }
@@ -879,10 +882,10 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
      * replication process. Currently the preamble is just the bulk count of
      * the file in the form "$<length>\r\n". */
     if (slave->replpreamble) {
-        nwritten = write(fd,slave->replpreamble,sdslen(slave->replpreamble));
+        nwritten = rwrite(fd,slave->replpreamble,sdslen(slave->replpreamble));
         if (nwritten == -1) {
             serverLog(LL_VERBOSE,"Write error sending RDB preamble to replica: %s",
-                strerror(errno));
+                rstrerror(errno));
             freeClient(slave);
             return;
         }
@@ -906,10 +909,10 @@ void sendBulkToSlave(aeEventLoop *el, int fd, void *privdata, int mask) {
         freeClient(slave);
         return;
     }
-    if ((nwritten = write(fd,buf,buflen)) == -1) {
+    if ((nwritten = rwrite(fd,buf,buflen)) == -1) {
         if (errno != EAGAIN) {
             serverLog(LL_WARNING,"Write error sending DB to replica: %s",
-                strerror(errno));
+                rstrerror(errno));
             freeClient(slave);
         }
         return;
@@ -972,6 +975,19 @@ void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
                 slave->replstate = SLAVE_STATE_ONLINE;
                 slave->repl_put_online_on_ack = 1;
                 slave->repl_ack_time = server.unixtime; /* Timeout otherwise. */
+                do {
+#ifdef BUILD_SSL
+                    if (server.ssl_config.enable_ssl == true) {
+                        startWaitForSlaveToLoadRdbAfterRdbTransfer(slave);
+                        break;
+                    }
+#endif
+                    serverLog(LL_NOTICE,
+                        "Streamed RDB transfer with slave %s succeeded (socket). Waiting for REPLCONF ACK from slave to enable streaming",
+                        replicationGetSlaveName(slave));
+                } while(0);
+
+
             } else {
                 if (bgsaveerr != C_OK) {
                     freeClient(slave);
@@ -1043,8 +1059,13 @@ void shiftReplicationId(void) {
 /* Returns 1 if the given replication state is a handshake state,
  * 0 otherwise. */
 int slaveIsInHandshakeState(void) {
+#ifdef BUILD_SSL
+    if (server.repl_state == REPL_STATE_SSL_HANDSHAKE){
+        return true;
+    }
+#endif
     return server.repl_state >= REPL_STATE_RECEIVE_PONG &&
-           server.repl_state <= REPL_STATE_RECEIVE_PSYNC;
+        server.repl_state <= REPL_STATE_RECEIVE_PSYNC;
 }
 
 /* Avoid the master to detect the slave is timing out while loading the
@@ -1059,9 +1080,8 @@ void replicationSendNewlineToMaster(void) {
     static time_t newline_sent;
     if (time(NULL) != newline_sent) {
         newline_sent = time(NULL);
-        if (write(server.repl_transfer_s,"\n",1) == -1) {
-            /* Pinging back in this stage is best-effort. */
-        }
+        /* Pinging back in this stage is best-effort. */
+        rping(server.repl_transfer_s);
     }
 }
 
@@ -1134,7 +1154,7 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
         if (syncReadLine(fd,buf,1024,server.repl_syncio_timeout*1000) == -1) {
             serverLog(LL_WARNING,
                 "I/O error reading bulk count from MASTER: %s",
-                strerror(errno));
+                rstrerror(errno));
             goto error;
         }
 
@@ -1191,10 +1211,14 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
         readlen = (left < (signed)sizeof(buf)) ? left : (signed)sizeof(buf);
     }
 
-    nread = read(fd,buf,readlen);
+    nread = rread(fd,buf,readlen);
     if (nread <= 0) {
+#ifdef BUILD_SSL
+        // May need to read more data from S2N
+        if (nread < 0 && errno == EAGAIN) return;
+#endif
         serverLog(LL_WARNING,"I/O error trying to sync with MASTER: %s",
-            (nread == -1) ? strerror(errno) : "connection lost");
+            (nread == -1) ? rstrerror(errno) : "connection lost");
         cancelReplicationHandshake();
         return;
     }
@@ -1300,32 +1324,58 @@ void readSyncBulkPayload(aeEventLoop *el, int fd, void *privdata, int mask) {
         /* Final setup of the connected slave <- master link */
         zfree(server.repl_transfer_tmpfile);
         close(server.repl_transfer_fd);
-        replicationCreateMasterClient(server.repl_transfer_s,rsi.repl_stream_db);
-        server.repl_state = REPL_STATE_CONNECTED;
-        server.repl_down_since = 0;
-        /* After a full resynchroniziation we use the replication ID and
-         * offset of the master. The secondary ID / offset are cleared since
-         * we are starting a new history. */
-        memcpy(server.replid,server.master->replid,sizeof(server.replid));
-        server.master_repl_offset = server.master->reploff;
-        clearReplicationId2();
-        /* Let's create the replication backlog if needed. Slaves need to
-         * accumulate the backlog regardless of the fact they have sub-slaves
-         * or not, in order to behave correctly if they are promoted to
-         * masters after a failover. */
-        if (server.repl_backlog == NULL) createReplicationBacklog();
 
-        serverLog(LL_NOTICE, "MASTER <-> REPLICA sync: Finished with success");
-        /* Restart the AOF subsystem now that we finished the sync. This
-         * will trigger an AOF rewrite, and when done will start appending
-         * to the new file. */
-        if (aof_is_enabled) restartAOFAfterSYNC();
+        do {
+            if (aof_is_enabled) restartAOFAfterSYNC();
+
+            server.master_replication_rdb_save_info = zmalloc(sizeof(rdbSaveInfo));
+            memcpy(server.master_replication_rdb_save_info, &rsi, sizeof(rdbSaveInfo));
+#ifdef BUILD_SSL
+            // We need to re-negotiate with master on a socket based bgsave when ssl is
+            // enabled.
+            int renegotiatieSsl = (usemark == true && server.ssl_config.enable_ssl == true);
+
+            if (renegotiatieSsl == true) {
+                server.repl_state = REPL_STATE_SSL_HANDSHAKE;
+                startSslNegotiateWithMasterAfterRdbLoad(fd);
+                break;
+            }
+#endif
+            finishSyncAfterReceivingBulkPayloadOnSlave();
+        } while(0);
     }
     return;
-
 error:
     cancelReplicationHandshake();
     return;
+}
+
+void finishSyncAfterReceivingBulkPayloadOnSlave() {
+    rdbSaveInfo rsi = RDB_SAVE_INFO_INIT;
+    memcpy(&rsi, server.master_replication_rdb_save_info, sizeof(rdbSaveInfo));
+    zfree(server.master_replication_rdb_save_info);
+    server.master_replication_rdb_save_info = NULL;
+
+    replicationCreateMasterClient(server.repl_transfer_s,rsi.repl_stream_db);
+    server.repl_state = REPL_STATE_CONNECTED;
+    server.repl_down_since = 0;
+
+    /* After a full resynchroniziation we use the replication ID and
+    * offset of the master. The secondary ID / offset are cleared since
+    * we are starting a new history. */
+    memcpy(server.replid,server.master->replid,sizeof(server.replid));
+    server.master_repl_offset = server.master->reploff;
+    clearReplicationId2();
+    /* Let's create the replication backlog if needed. Slaves need to
+    * accumulate the backlog regardless of the fact they have sub-slaves
+    * or not, in order to behave correctly if they are promoted to
+    * masters after a failover. */
+    if (server.repl_backlog == NULL) createReplicationBacklog();
+
+    serverLog(LL_NOTICE, "MASTER <-> SLAVE sync: Finished with success");
+    /* Restart the AOF subsystem now that we finished the sync. This
+    * will trigger an AOF rewrite, and when done will start appending
+    * to the new file. */
 }
 
 /* Send a synchronous command to the master. Used to send AUTH and
@@ -1370,7 +1420,7 @@ char *sendSynchronousCommand(int flags, int fd, ...) {
         {
             sdsfree(cmd);
             return sdscatprintf(sdsempty(),"-Writing to master: %s",
-                    strerror(errno));
+                    rstrerror(errno));
         }
         sdsfree(cmd);
     }
@@ -1383,7 +1433,7 @@ char *sendSynchronousCommand(int flags, int fd, ...) {
             == -1)
         {
             return sdscatprintf(sdsempty(),"-Reading from master: %s",
-                    strerror(errno));
+                    rstrerror(errno));
         }
         server.repl_transfer_lastio = server.unixtime;
         return sdsnew(buf);
@@ -1838,7 +1888,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
         serverLog(LL_NOTICE,"Retrying with SYNC...");
         if (syncWrite(fd,"SYNC\r\n",6,server.repl_syncio_timeout*1000) == -1) {
             serverLog(LL_WARNING,"I/O error writing to MASTER: %s",
-                strerror(errno));
+                rstrerror(errno));
             goto error;
         }
     }
@@ -1878,7 +1928,7 @@ void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask) {
 error:
     aeDeleteFileEvent(server.el,fd,AE_READABLE|AE_WRITABLE);
     if (dfd != -1) close(dfd);
-    close(fd);
+    rclose(fd);
     server.repl_transfer_s = -1;
     server.repl_state = REPL_STATE_CONNECT;
     return;
@@ -1899,19 +1949,45 @@ int connectWithMaster(void) {
             strerror(errno));
         return C_ERR;
     }
+    do {
+#ifdef BUILD_SSL
+        if (server.ssl_config.enable_ssl == true) {
+            if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
+                            server.ssl_config.ssl_performance_mode,server.masterhost,
+                            server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
+                serverLog(LL_WARNING, "Error initializing SSL configuration for replication: '%s'",
+                        s2n_strerror(s2n_errno, "EN"));
+                goto error;
+            }
 
-    if (aeCreateFileEvent(server.el,fd,AE_READABLE|AE_WRITABLE,syncWithMaster,NULL) ==
-            AE_ERR)
-    {
-        close(fd);
-        serverLog(LL_WARNING,"Can't create readable event for SYNC");
-        return C_ERR;
-    }
+            if (aeCreateFileEvent(server.el, fd, AE_WRITABLE | AE_READABLE, sslNegotiateWithMaster, NULL) == AE_ERR) {
+                serverLog(LL_WARNING, "Can't create readable event for SYNC");
+                cleanupSslConnectionForFd(fd);
+                goto error;
+            }
+            break;
+        }
+#endif
+
+        if (aeCreateFileEvent(server.el,fd,AE_READABLE|AE_WRITABLE,syncWithMaster,NULL) ==
+        AE_ERR)
+        {
+            serverLog(LL_WARNING,"Can't create readable event for SYNC");
+            goto error;
+        }
+    } while(0);
 
     server.repl_transfer_lastio = server.unixtime;
     server.repl_transfer_s = fd;
+#ifdef BUILD_SSL
+    server.repl_state = server.ssl_config.enable_ssl == true ? REPL_STATE_SSL_HANDSHAKE: REPL_STATE_CONNECTING;
+#else
     server.repl_state = REPL_STATE_CONNECTING;
+#endif
     return C_OK;
+error:
+    close(fd);
+    return C_ERR;
 }
 
 /* This function can be called when a non blocking connection is currently
@@ -1922,7 +1998,7 @@ void undoConnectWithMaster(void) {
     int fd = server.repl_transfer_s;
 
     aeDeleteFileEvent(server.el,fd,AE_READABLE|AE_WRITABLE);
-    close(fd);
+    rclose(fd);
     server.repl_transfer_s = -1;
 }
 
@@ -1948,11 +2024,17 @@ void replicationAbortSyncTransfer(void) {
 int cancelReplicationHandshake(void) {
     if (server.repl_state == REPL_STATE_TRANSFER) {
         replicationAbortSyncTransfer();
-        server.repl_state = REPL_STATE_CONNECT;
+        server.repl_state = REPL_STATE_CONNECT;        
     } else if (server.repl_state == REPL_STATE_CONNECTING ||
                slaveIsInHandshakeState())
     {
-        undoConnectWithMaster();
+        undoConnectWithMaster();        
+#ifdef BUILD_SSL
+        if (server.master_replication_rdb_save_info) {
+            zfree(server.master_replication_rdb_save_info);
+            server.master_replication_rdb_save_info = NULL;  
+        }
+#endif
         server.repl_state = REPL_STATE_CONNECT;
     } else {
         return 0;
@@ -2633,9 +2715,7 @@ void replicationCron(void) {
              server.rdb_child_type != RDB_CHILD_TYPE_SOCKET));
 
         if (is_presync) {
-            if (write(slave->fd, "\n", 1) == -1) {
-                /* Don't worry about socket errors, it's just a ping. */
-            }
+            rping(slave->fd);
         }
     }
 

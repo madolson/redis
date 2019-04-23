@@ -44,6 +44,17 @@ DEBUG_FLAGS?= -g -ggdb
 REAL_CFLAGS=$(OPTIMIZATION) -fPIC $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(DEBUG_FLAGS)
 REAL_LDFLAGS=$(LDFLAGS)
 
+# Include SSL libraries if compile flag exists
+ifeq ($(BUILD_SSL),yes)
+	S2N_INCLUDE_DIR ?= ../s2n/api
+	S2N_LIB_DIR ?= ../s2n/lib
+	OPENSSL_LIB_DIR ?= ../openssl
+	OPENSSL_INCLUDE_DIR ?= ../openssl
+
+	REAL_CFLAGS += $(addprefix -I,$(S2N_INCLUDE_DIR)) $(addprefix -D,BUILD_SSL) 
+	REAL_LDFLAGS += $(S2N_LIB_DIR)/libs2n.a $(CRYPTO_LIB_DIR)/libssl.a $(CRYPTO_LIB_DIR)/libcrypto.a
+endif
+
 DYLIBSUFFIX=so
 STLIBSUFFIX=a
 DYLIB_MINOR_NAME=$(LIBNAME).$(DYLIBSUFFIX).$(HIREDIS_SONAME)

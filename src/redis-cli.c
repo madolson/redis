@@ -230,6 +230,9 @@ static struct config {
     int verbose;
     clusterManagerCommand cluster_manager_command;
     int no_auth_warning;
+#ifdef BUILD_SSL
+    int ssl_mode;
+#endif
 } config;
 
 /* User preferences. */
@@ -762,7 +765,19 @@ static int cliConnect(int flags) {
         }
 
         if (config.hostsocket == NULL) {
-            context = redisConnect(config.hostip,config.hostport);
+#ifdef BUILD_SSL
+            if (config.ssl_mode == true) {
+                if(hiredisInitSsl() != REDIS_OK) {
+                    fprintf(stderr, "Could not initialize SSL for hiredis client");
+                    return REDIS_ERR;
+                }
+                context = redisSslConnect(config.hostip, config.hostport);
+            } else {
+                context = redisConnect(config.hostip, config.hostport); 
+            }
+#else
+            context = redisConnect(config.hostip, config.hostport);
+#endif
         } else {
             context = redisConnectUnix(config.hostsocket);
         }
@@ -1434,6 +1449,10 @@ static int parseOptions(int argc, char **argv) {
         } else if (!strcmp(argv[i],"--cluster-search-multiple-owners")) {
             config.cluster_manager_command.flags |=
                 CLUSTER_MANAGER_CMD_FLAG_CHECK_OWNERS;
+#ifdef BUILD_SSL
+        } else if (!strcmp(argv[i],"--ssl")){
+            config.ssl_mode = 1;
+#endif
         } else if (!strcmp(argv[i],"-v") || !strcmp(argv[i], "--version")) {
             sds version = cliVersion();
             printf("redis-cli %s\n", version);
@@ -1565,6 +1584,10 @@ static void usage(void) {
 "  --verbose          Verbose mode.\n"
 "  --no-auth-warning  Don't show warning message when using password on command\n"
 "                     line interface.\n"
+"                     are not rolled back from the server memory.\n"
+#ifdef BUILD_SSL
+"  --ssl              Use TLS for connecting to Redis\n"
+#endif 
 "  --help             Output this help and exit.\n"
 "  --version          Output version and exit.\n"
 "\n",
@@ -1581,6 +1604,9 @@ static void usage(void) {
 "  redis-cli -r 100 -i 1 info | grep used_memory_human:\n"
 "  redis-cli --eval myscript.lua key1 key2 , arg1 arg2 arg3\n"
 "  redis-cli --scan --pattern '*:12345*'\n"
+#ifdef BUILD_SSL
+"  redis-cli --ssl -h 127.0.0.1 -p 6379\n"
+#endif
 "\n"
 "  (Note: when using --eval the comma separates KEYS[] from ARGV[] items)\n"
 "\n"
@@ -6495,7 +6521,7 @@ void sendCapa() {
 /* Sends SYNC and reads the number of bytes in the payload. Used both by
  * slaveMode() and getRDB().
  * returns 0 in case an EOF marker is used. */
-unsigned long long sendSync(int fd, char *out_eof) {
+unsigned long long sendSync(struct redisContext* context, char *out_eof) {
     /* To start we need to send the SYNC command and return the payload.
      * The hiredis client lib does not understand this part of the protocol
      * and we don't want to mess with its buffers, so everything is performed
@@ -6504,7 +6530,7 @@ unsigned long long sendSync(int fd, char *out_eof) {
     ssize_t nread;
 
     /* Send the SYNC command. */
-    if (write(fd,"SYNC\r\n",6) != 6) {
+    if (hwrite(context,"SYNC\r\n",6) != 6) {
         fprintf(stderr,"Error writing to master\n");
         exit(1);
     }
@@ -6512,7 +6538,7 @@ unsigned long long sendSync(int fd, char *out_eof) {
     /* Read $<payload>\r\n, making sure to read just up to "\n" */
     p = buf;
     while(1) {
-        nread = read(fd,p,1);
+        nread = hread(context,p,1);
         if (nread <= 0) {
             fprintf(stderr,"Error reading bulk length while SYNCing\n");
             exit(1);
@@ -6533,11 +6559,10 @@ unsigned long long sendSync(int fd, char *out_eof) {
 }
 
 static void slaveMode(void) {
-    int fd = context->fd;
     static char eofmark[RDB_EOF_MARK_SIZE];
     static char lastbytes[RDB_EOF_MARK_SIZE];
     static int usemark = 0;
-    unsigned long long payload = sendSync(fd, eofmark);
+    unsigned long long payload = sendSync(context, eofmark);
     char buf[1024];
     int original_output = config.output;
 
@@ -6557,7 +6582,7 @@ static void slaveMode(void) {
     while(payload) {
         ssize_t nread;
 
-        nread = read(fd,buf,(payload > sizeof(buf)) ? sizeof(buf) : payload);
+        nread = hread(context,buf,(payload > sizeof(buf)) ? sizeof(buf) : payload);
         if (nread <= 0) {
             fprintf(stderr,"Error reading RDB payload while SYNCing\n");
             exit(1);
@@ -6601,19 +6626,22 @@ static void slaveMode(void) {
  * to fetch the RDB file from a remote server. */
 static void getRDB(clusterManagerNode *node) {
     int s, fd;
+    struct redisContext* c;
     char *filename;
     if (node != NULL) {
         assert(node->context);
         s = node->context->fd;
+        c = node->context;
         filename = clusterManagerGetNodeRDBFilename(node);
     } else {
         s = context->fd;
+        c = context;
         filename = config.rdb_filename;
     }
     static char eofmark[RDB_EOF_MARK_SIZE];
     static char lastbytes[RDB_EOF_MARK_SIZE];
     static int usemark = 0;
-    unsigned long long payload = sendSync(s, eofmark);
+    unsigned long long payload = sendSync(c, eofmark);
     char buf[4096];
 
     if (payload == 0) {
@@ -6642,12 +6670,12 @@ static void getRDB(clusterManagerNode *node) {
     while(payload) {
         ssize_t nread, nwritten;
 
-        nread = read(s,buf,(payload > sizeof(buf)) ? sizeof(buf) : payload);
+        nread = hread(context,buf,(payload > sizeof(buf)) ? sizeof(buf) : payload);
         if (nread <= 0) {
             fprintf(stderr,"I/O Error reading RDB payload from socket\n");
             exit(1);
         }
-        nwritten = write(fd, buf, nread);
+        nwritten = hwrite(context, buf, nread);
         if (nwritten != nread) {
             fprintf(stderr,"Error writing data to file: %s\n",
                 (nwritten == -1) ? strerror(errno) : "short write");
@@ -6727,7 +6755,7 @@ static void pipeMode(void) {
 
             /* Read from socket and feed the hiredis reader. */
             do {
-                nread = read(fd,ibuf,sizeof(ibuf));
+                nread = hread(context,ibuf,sizeof(ibuf));
                 if (nread == -1 && errno != EAGAIN && errno != EINTR) {
                     fprintf(stderr, "Error reading from the server: %s\n",
                         strerror(errno));
@@ -6773,7 +6801,7 @@ static void pipeMode(void) {
             while(1) {
                 /* Transfer current buffer to server. */
                 if (obuf_len != 0) {
-                    ssize_t nwritten = write(fd,obuf+obuf_pos,obuf_len);
+                    ssize_t nwritten = hwrite(context,obuf+obuf_pos,obuf_len);
 
                     if (nwritten == -1) {
                         if (errno != EAGAIN && errno != EINTR) {
@@ -7694,6 +7722,9 @@ int main(int argc, char **argv) {
     config.cluster_manager_command.threshold =
         CLUSTER_MANAGER_REBALANCE_THRESHOLD;
     config.cluster_manager_command.backup_dir = NULL;
+#ifdef BUILD_SSL
+    config.ssl_mode = 0;
+#endif
     pref.hints = 1;
 
     spectrum_palette = spectrum_palette_color;
