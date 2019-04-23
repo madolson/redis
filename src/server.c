@@ -33,6 +33,7 @@
 #include "bio.h"
 #include "latency.h"
 #include "atomicvar.h"
+#include "ssl.h"
 
 #include <time.h>
 #include <signal.h>
@@ -2314,6 +2315,9 @@ void initServerConfig(void) {
     server.lazyfree_lazy_server_del = CONFIG_DEFAULT_LAZYFREE_LAZY_SERVER_DEL;
     server.always_show_logo = CONFIG_DEFAULT_ALWAYS_SHOW_LOGO;
     server.lua_time_limit = LUA_SCRIPT_TIME_LIMIT;
+    server.master_replication_rdb_save_info = NULL;
+
+    initSslConfigDefaults(&server.ssl_config);
 
     unsigned int lruclock = getLRUClock();
     atomicSet(server.lruclock,lruclock);
@@ -2732,6 +2736,8 @@ void initServer(void) {
         exit(1);
     }
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
+
+    initSsl(&server.ssl_config);
 
     /* Open the TCP listening socket for the user commands. */
     if (server.port != 0 &&
@@ -3569,6 +3575,10 @@ int prepareForShutdown(int flags) {
 
     /* Close the listening sockets. Apparently this allows faster restarts. */
     closeListeningSockets(1);
+
+    /* Clean up any resources used for SSL */
+    cleanupSsl(&server.ssl_config);
+
     serverLog(LL_WARNING,"%s is now ready to exit, bye bye...",
         server.sentinel_mode ? "Sentinel" : "Redis");
     return C_OK;
@@ -4309,6 +4319,51 @@ sds genRedisInfoString(char *section) {
                 (c->calls == 0) ? 0 : ((float)c->microseconds/c->calls));
         }
         dictReleaseIterator(di);
+    }
+    /* SSL Statistics */
+    if (allsections || defsections || (!strcasecmp(section,"ssl"))) {
+        if (sections++) info = sdscat(info,"\r\n# SSL\r\n");
+        if (isSSLCompiled()) {
+            info = sdscatprintf(info, "ssl_compiled:yes\r\n");
+        } else {
+            info = sdscatprintf(info, "ssl_compiled:no\r\n");
+        }
+        if (isSSLEnabled()) {
+            info = sdscatprintf(info,
+                    "ssl_enabled:%s\r\n"
+                    "ssl_connections_to_previous_certificate:%d\r\n"
+                    "ssl_connections_to_current_certificate:%d\r\n"
+                    "ssl_current_certificate_not_before_date:%s\r\n"
+                    "ssl_current_certificate_not_after_date:%s\r\n"
+                    "ssl_current_certificate_serial:%lx\r\n"
+                    "ssl_certificate_file:%s\r\n"
+                    "ssl_certificate_private_key_file:%s\r\n"
+                    "ssl_dh_params_file:%s\r\n"
+                    "ssl_root_ca_certs_path:%s\r\n"
+                    "ssl_cipher_prefs:%s\r\n"
+                    "ssl_performance_mode:%s\r\n"
+                    "ssl_total_repeated_reads:%"PRIu64"\r\n"
+                    "ssl_cur_repeated_reads:%lu\r\n"
+                    "ssl_max_simultaneous_repeated_reads:%lu\r\n",
+                server.ssl_config.enable_ssl ? "yes": "no",
+                server.ssl_config.connections_to_previous_certificate,
+                server.ssl_config.connections_to_current_certificate,
+                server.ssl_config.certificate_not_before_date,
+                server.ssl_config.certificate_not_after_date,
+                server.ssl_config.certificate_serial,
+                server.ssl_config.ssl_certificate_file,
+                server.ssl_config.ssl_certificate_private_key_file,
+                server.ssl_config.ssl_dh_params_file,
+                server.ssl_config.root_ca_certs_path,
+                server.ssl_config.ssl_cipher_prefs,
+                getSslPerformanceModeStr(server.ssl_config.ssl_performance_mode),
+                server.ssl_config.total_repeated_reads,
+                server.ssl_config.sslconn_with_cached_data != NULL ? listLength(server.ssl_config.sslconn_with_cached_data) : 0,
+                server.ssl_config.max_repeated_read_list_length
+            );
+        } else {
+            info = sdscatprintf(info, "ssl_enabled:no\r\n");
+        }
     }
 
     /* Cluster */
