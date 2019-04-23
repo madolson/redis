@@ -35,7 +35,7 @@ initSslConfigForClient(const char *cipher_prefs,
                        const char *certificate, const char *rootCACertificatesPath);
 
 static struct s2n_config *
-initSslConfig(bool is_server, const char *certificate, const char *private_key, const char *dh_params,
+initSslConfig(int is_server, const char *certificate, const char *private_key, const char *dh_params,
               const char *cipher_prefs, const char *rootCACertificatesPath);
 
 uint8_t s2nVerifyHost(const char *hostName, size_t length, void *data);
@@ -82,7 +82,7 @@ void removeRepeatedRead(ssl_connection *conn);
  * should be invoked at startup time
  */
 void initSsl(ssl_t *ssl) {
-    if (ssl->enable_ssl == true) {
+    if (ssl->enable_ssl == 1) {
         serverLog(LL_NOTICE, "Initializing SSL configuration");
         setenv("S2N_ENABLE_CLIENT_MODE", "1", 1);
         // MLOCK is used to keep memory from being moved to SWAP. However, S2N can run into 
@@ -141,7 +141,7 @@ void initSsl(ssl_t *ssl) {
  * should be invoked at shutdown time
  */
 void cleanupSsl(ssl_t *ssl) {
-    if (ssl->enable_ssl == true) {
+    if (ssl->enable_ssl == 1) {
         if (s2n_cleanup() < 0)
             serverLog(LL_WARNING, "Error cleaning up SSL resources: %s", s2n_strerror(s2n_errno, "EN"));
         if (s2n_config_free(ssl->server_ssl_config) < 0)
@@ -185,7 +185,7 @@ char *getSslPerformanceModeStr(int mode) {
  * inline for performance reasons
  */
 inline ssize_t sslRead(int fd, void *buffer, size_t nbytes) {
-    if (server.ssl_config.enable_ssl == false) {
+    if (server.ssl_config.enable_ssl == 0) {
         return read(fd, buffer, nbytes);
     } else {
         s2n_blocked_status blocked;
@@ -230,7 +230,7 @@ inline void sslPing(int fd) {
  * inline for performance reasons
  */
 inline ssize_t sslWrite(int fd, const void *buffer, size_t nbytes) {
-    if (server.ssl_config.enable_ssl == false) {
+    if (server.ssl_config.enable_ssl == 0) {
         return write(fd, buffer, nbytes);
     } else {
         s2n_errno = S2N_ERR_T_OK;
@@ -272,7 +272,7 @@ inline ssize_t sslWrite(int fd, const void *buffer, size_t nbytes) {
  * or s2n_strerror for SSL related errors
  */
 inline const char *sslstrerror(void) {
-    if (server.ssl_config.enable_ssl == false) {
+    if (server.ssl_config.enable_ssl == 0) {
         return strerror(errno);
     } else if (s2n_error_get_type(s2n_errno) == S2N_ERR_T_IO) {
         //S2N_ERR_T_IO => underlying I/O operation failed, check system errno
@@ -437,7 +437,7 @@ error:
  * to this connection
  */
 int cleanupSslConnectionForFd(int fd) {
-    return cleanupSslConnection(getSslConnectionForFd(fd), fd, true);
+    return cleanupSslConnection(getSslConnectionForFd(fd), fd, 1);
 }
 
 /**
@@ -446,7 +446,7 @@ int cleanupSslConnectionForFd(int fd) {
  * so there are no race conditions with ssl alerts and negotiating.
  */
 int cleanupSslConnectionForFdWithoutShutdown(int fd) {
-    return cleanupSslConnection(getSslConnectionForFd(fd), fd, false);
+    return cleanupSslConnection(getSslConnectionForFd(fd), fd, 0);
 }
 
 
@@ -554,7 +554,7 @@ error:
  */ 
 int syncSslNegotiateForFd(int fd, long timeout) {
     ssl_connection *ssl_conn = getSslConnectionForFd(fd);
-    while(true) {
+    while(1) {
         s2n_blocked_status blocked;
         serverLog(LL_DEBUG, "Starting synchronous ssl negotiation.");   
         if (s2n_negotiate(ssl_conn->s2nconn, &blocked) < 0) {
@@ -680,7 +680,7 @@ void startWaitForSlaveToLoadRdbAfterRdbTransfer(struct client *slave) {
  * add it back after SSL handshake is done
  */
 void deleteReadEventHandlerForSlavesWaitingBgsave() {
-    if (server.ssl_config.enable_ssl == true) {
+    if (server.ssl_config.enable_ssl == 1) {
         listIter li;
         listNode *ln;
         listRewind(server.slaves, &li);
@@ -697,9 +697,9 @@ void deleteReadEventHandlerForSlavesWaitingBgsave() {
 }
 
 /**
- * Returns true if fd_to_ssl_conn can be resized from cur_size to new_size
+ * Returns 1 if fd_to_ssl_conn can be resized from cur_size to new_size
  */
-bool isResizeAllowed(ssl_connection **fd_to_ssl_conn, int cur_size, int new_size) {
+int isResizeAllowed(ssl_connection **fd_to_ssl_conn, int cur_size, int new_size) {
     int max_fd = -1;
     for (int i = cur_size - 1; i >= 0; i--) {
         if (fd_to_ssl_conn[i] != NULL) {
@@ -707,7 +707,7 @@ bool isResizeAllowed(ssl_connection **fd_to_ssl_conn, int cur_size, int new_size
             break;
         }
     }
-    return max_fd < new_size ? true : false;
+    return max_fd < new_size ? 1 : 0;
 }
 
 /* Resize the maximum size of the fd_to_ssl_conn.
@@ -723,7 +723,7 @@ int resizeFdToSslConnSize(ssl_t *ssl, unsigned int setsize) {
         return C_OK;
     } 
     
-    if (isResizeAllowed(ssl->fd_to_sslconn, ssl->fd_to_sslconn_size, setsize) == false){
+    if (isResizeAllowed(ssl->fd_to_sslconn, ssl->fd_to_sslconn_size, setsize) == 0){
         return C_ERR;
     } 
 
@@ -1221,7 +1221,7 @@ sslNegotiateWithoutPostHandshakeHandler(aeEventLoop *el, int fd, void *privdata,
  * (e.g. replication client, cluster bus client)
  */
 int initClientSslConfig(ssl_t *ssl) {
-    if (ssl->enable_ssl == true && ssl->client_ssl_config == NULL) {
+    if (ssl->enable_ssl && ssl->client_ssl_config == NULL) {
 
         ssl->client_ssl_config = initSslConfigForClient(ssl->ssl_cipher_prefs,
                                                            ssl->ssl_certificate,
@@ -1240,7 +1240,7 @@ int initClientSslConfig(ssl_t *ssl) {
  * (e.g. replication master, cluster bus master, query processor server)
  */
 int initServerSslConfig(ssl_t *ssl) {
-    if (ssl->enable_ssl == true && ssl->server_ssl_config == NULL) {
+    if (ssl->enable_ssl && ssl->server_ssl_config == NULL) {
         ssl->server_ssl_config = initSslConfigForServer(ssl->ssl_certificate, ssl->ssl_certificate_private_key,
                                                            ssl->ssl_dh_params, ssl->ssl_cipher_prefs);
         if (!ssl->server_ssl_config) {
@@ -1303,17 +1303,17 @@ int freeSslConnection(ssl_connection *conn) {
 static struct s2n_config *
 initSslConfigForServer(const char *certificate, const char *privateKey, const char *dhParams,
                        const char *cipherPrefs) {
-    return initSslConfig(true, certificate, privateKey, dhParams, cipherPrefs, NULL);
+    return initSslConfig(1, certificate, privateKey, dhParams, cipherPrefs, NULL);
 }
 
 static struct s2n_config *
 initSslConfigForClient(const char *cipher_prefs,
                        const char *certificate, const char *rootCACertificatesPath) {
-    return initSslConfig(false, certificate, NULL, NULL, cipher_prefs, rootCACertificatesPath);
+    return initSslConfig(0, certificate, NULL, NULL, cipher_prefs, rootCACertificatesPath);
 }
 
 static struct s2n_config *
-initSslConfig(bool is_server, const char *certificate, const char *private_key, const char *dh_params,
+initSslConfig(int is_server, const char *certificate, const char *private_key, const char *dh_params,
               const char *cipher_prefs, const char *rootCACertificatesPath) {
     serverLog(LL_DEBUG, "Initializing %s SSL configuration", is_server ? "Server" : "Client");
     struct s2n_config *ssl_config = s2n_config_new();
@@ -1322,21 +1322,21 @@ initSslConfig(bool is_server, const char *certificate, const char *private_key, 
         return NULL;
     }
 
-    if (is_server == true && s2n_config_add_cert_chain_and_key(ssl_config, certificate,
+    if (is_server && s2n_config_add_cert_chain_and_key(ssl_config, certificate,
                                                                private_key) < 0) {
         serverLog(LL_WARNING, "Error adding certificate/key to s2n config: '%s'.",
                   s2n_strerror(s2n_errno, "EN"));
         goto config_error;
     }
 
-    if (is_server == true && s2n_config_add_dhparams(ssl_config, dh_params) < 0) {
+    if (is_server && s2n_config_add_dhparams(ssl_config, dh_params) < 0) {
         serverLog(LL_WARNING, "Error adding DH parameters to s2n config: '%s'.",
                   s2n_strerror(s2n_errno, "EN"));
         goto config_error;
     }
 
     /* Load the root ca certificate */
-    if(is_server == false && 
+    if(is_server == 0 && 
             s2n_config_set_verification_ca_location(ssl_config, NULL, rootCACertificatesPath) < 0) {
         serverLog(LL_WARNING, "Error while loading CA certificates into s2n: '%s'.", s2n_strerror(s2n_errno, "EN"));
         goto config_error;
@@ -1346,12 +1346,12 @@ initSslConfig(bool is_server, const char *certificate, const char *private_key, 
      * Load the intermediate nodes from the provided certificate file, this will also load the leaf nodes
      * but they will be unused.
     */
-    if(is_server == false && s2n_config_add_pem_to_trust_store(ssl_config, certificate) < 0) {
+    if(is_server == 0 && s2n_config_add_pem_to_trust_store(ssl_config, certificate) < 0) {
         serverLog(LL_WARNING, "Error while loading SSL certificate into s2n: '%s'.", s2n_strerror(s2n_errno, "EN"));
         goto config_error;        
     }
     
-    if(is_server == false && s2n_config_set_verify_host_callback(ssl_config, s2nVerifyHost, NULL) < 0){
+    if(is_server == 0 && s2n_config_set_verify_host_callback(ssl_config, s2nVerifyHost, NULL) < 0){
         serverLog(LL_WARNING, "Error while setting host verify callback: '%s'.", s2n_strerror(s2n_errno, "EN"));               
         goto config_error;            
     }
@@ -1376,7 +1376,7 @@ config_error:
  * connections is accurate.
  */
 static void updateClientsUsingOldCertificate(void) {
-    if (server.ssl_config.enable_ssl == true) {
+    if (server.ssl_config.enable_ssl == 1) {
         listIter li;
         listRewind(server.clients, &li);
         listNode *ln;
@@ -1417,7 +1417,7 @@ int processRepeatedReads(struct aeEventLoop *eventLoop, long long id, void *clie
     UNUSED(id);
     UNUSED(clientData);
 
-    if (server.ssl_config.enable_ssl == false || listLength(server.ssl_config.sslconn_with_cached_data) == 0) {
+    if (server.ssl_config.enable_ssl == 0 || listLength(server.ssl_config.sslconn_with_cached_data) == 0) {
         server.ssl_config.repeated_reads_task_id = AE_ERR;
         return AE_NOMORE;
     }

@@ -497,16 +497,18 @@ typedef long long mstime_t; /* millisecond time type. */
 #define rread(fd, buffer, bytes) sslRead((fd), (buffer), (bytes))
 #define rwrite(fd, buffer, bytes) sslWrite((fd), (buffer), (bytes))
 #define rping(fd) sslPing((fd));
-#define rclose(fd) if(server.ssl_config.enable_ssl == true) {\
+#define rclose(fd) if(server.ssl_config.enable_ssl) {\
     cleanupSslConnectionForFd((fd));\
 }\
 close((fd))
+#define isSSLEnabled() server.ssl_config.enable_ssl
 #else
 #define rstrerror(errno) strerror(errno)
 #define rread(fd, buffer, bytes) read((fd), (buffer), (bytes))
 #define rwrite(fd, buffer, bytes) write((fd), (buffer), (bytes))
 #define rping(fd) write((fd), "\n", 1)
 #define rclose(fd) close((fd))
+#define isSSLEnabled() 0
 #endif
 
 /*-----------------------------------------------------------------------------

@@ -31,9 +31,7 @@
 #include "server.h"
 #include "cluster.h"
 #include "endianconv.h"
-#ifdef BUILD_SSL
 #include "ssl.h"
-#endif
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -341,7 +339,7 @@ int clusterSaveConfig(int do_fsync) {
 
     /* Get the nodes description and concatenate our "vars" directive to
      * save currentEpoch and lastVoteEpoch. */
-    ci = clusterGenNodesDescription(CLUSTER_NODE_HANDSHAKE, true);
+    ci = clusterGenNodesDescription(CLUSTER_NODE_HANDSHAKE, 1);
     ci = sdscatprintf(ci,"vars currentEpoch %llu lastVoteEpoch %llu\n",
         (unsigned long long) server.cluster->currentEpoch,
         (unsigned long long) server.cluster->lastVoteEpoch);
@@ -624,20 +622,12 @@ clusterLink *createClusterLink(clusterNode *node) {
 void freeClusterLink(clusterLink *link) {
     if (link->fd != -1) {
         aeDeleteFileEvent(server.el, link->fd, AE_READABLE|AE_WRITABLE);
-#ifdef BUILD_SSL
-        if(server.ssl_config.enable_ssl == true){
-            serverAssert((unsigned int)link->fd < server.ssl_config.fd_to_sslconn_size);
-            if(server.ssl_config.fd_to_sslconn[link->fd] != NULL){
-                cleanupSslConnectionForFd(link->fd);
-            }
-        }
-#endif
     }
     sdsfree(link->sndbuf);
     sdsfree(link->rcvbuf);
     if (link->node)
         link->node->link = NULL;
-    close(link->fd);
+    rclose(link->fd);
     zfree(link);
 }
 
@@ -675,22 +665,18 @@ void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
          * node identity. */
         link = createClusterLink(NULL);
         link->fd = cfd;
-        do {
-#ifdef BUILD_SSL
-            if (server.ssl_config.enable_ssl == true) {
-                serverLog(LL_DEBUG, "Initializing SSL connection for cluster node %s:%d", cip, cport);
-                if (initSslConnection(S2N_SERVER, server.ssl_config.server_ssl_config, cfd, SSL_PERFORMANCE_MODE_LOW_LATENCY, NULL,
-                                server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
-                    serverLog(LL_WARNING, "Error initializing ssl connection for cluster node %s:%d", cip, cport);
-                    freeClusterLink(link);
-                    return;
-                }
-                aeCreateFileEvent(server.el, cfd, AE_READABLE | AE_WRITABLE, sslNegotiateWithClusterNodeAsServer, link);
-                break;
+        if (isSSLEnabled()) {
+            serverLog(LL_DEBUG, "Initializing SSL connection for cluster node %s:%d", cip, cport);
+            if (initSslConnection(S2N_SERVER, server.ssl_config.server_ssl_config, cfd, SSL_PERFORMANCE_MODE_LOW_LATENCY, NULL,
+                            server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
+                serverLog(LL_WARNING, "Error initializing ssl connection for cluster node %s:%d", cip, cport);
+                freeClusterLink(link);
+                return;
             }
-#endif
+            aeCreateFileEvent(server.el, cfd, AE_READABLE | AE_WRITABLE, sslNegotiateWithClusterNodeAsServer, link);            
+        } else {
             aeCreateFileEvent(server.el, cfd, AE_READABLE, clusterReadHandler, link);
-        } while (0);
+        }
     }
 }
 
@@ -3409,23 +3395,16 @@ void clusterClientSetup(clusterLink *link) {
     mstime_t old_ping_sent = node->ping_sent;
     clusterSendPing(link, node->flags & CLUSTER_NODE_MEET ?
                           CLUSTERMSG_TYPE_MEET : CLUSTERMSG_TYPE_PING);
-    if (old_ping_sent){
-        do {
-#ifdef BUILD_SSL
-            if (server.ssl_config.enable_ssl == true) {
-                break;
-            }
-#endif
-            /* If there was an active ping before the link was
-            * disconnected, we want to restore the ping time, otherwise
-            * replaced by the clusterSendPing() call. If SSL is enabled,
-            * we don't want to do it because we have already spent some
-            * time in SSL negotiation. We don't want to be too aggressive
-            * in timeouts due to that. Also we reach this point after
-            * SSL negotiation, so network link is healthy to other node
-            * and we can be less aggressive */
-            node->ping_sent = old_ping_sent;
-        } while(0);
+    if (old_ping_sent && !isSSLEnabled()){
+        /* If there was an active ping before the link was
+        * disconnected, we want to restore the ping time, otherwise
+        * replaced by the clusterSendPing() call. If SSL is enabled,
+        * we don't want to do it because we have already spent some
+        * time in SSL negotiation. We don't want to be too aggressive
+        * in timeouts due to that. Also we reach this point after
+        * SSL negotiation, so network link is healthy to other node
+        * and we can be less aggressive */
+        node->ping_sent = old_ping_sent;
     }
     /* We can clear the flag after the first packet is sent.
      * If we'll never receive a PONG, we'll never send new packets
@@ -3544,41 +3523,37 @@ void clusterCron(void) {
             link = createClusterLink(node);
             link->fd = fd;
             node->link = link;
-            do {
-#ifdef BUILD_SSL
-                if (server.ssl_config.enable_ssl == true) {
-                    /* Setting ping_sent time is serving 2 purposes -
-                    * 1) To prevent ping sender code in clusterCron to send
-                    * ping while SSL handshake is ongoing. Sending a ping during
-                    * that period will break SSL handshake
-                    *
-                    * 2) To subject SSL negotiation to cluster timeout. By artificially
-                    * setting ping_sent time to the time when SSL negotiation started, we
-                    * are subjecting it to cluster timeout restrictions so that if SSL
-                    * negotiation is taking unexpectedly long, there is something wrong
-                    * and we want to retry
-                    */
-                    if(node->ping_sent == 0) node->ping_sent = link->ctime;
-                    if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
-                            SSL_PERFORMANCE_MODE_LOW_LATENCY, node->ip, server.ssl_config.fd_to_sslconn,
-                            server.ssl_config.fd_to_sslconn_size) == NULL) {
-                        serverLog(LL_WARNING, "Could not create SSL connection for connecting with Cluster Node");
-                        //no cleanup required. Handshake timeout will automatically take care of freeing this node
-                        continue;
-                    }
-                    if (aeCreateFileEvent(server.el, link->fd, AE_READABLE | AE_WRITABLE,
-                            sslNegotiateWithClusterNodeAsClient, link) == AE_ERR) {
-                        serverLog(LL_WARNING, "Could not create event handler SSL negotiation");
-                        //no cleanup required. Handshake timeout will automatically take care of freeing this node
-                        continue;
-                    }
-                    break;
+            if (isSSLEnabled()) {
+                /* Setting ping_sent time is serving 2 purposes -
+                * 1) To prevent ping sender code in clusterCron to send
+                * ping while SSL handshake is ongoing. Sending a ping during
+                * that period will break SSL handshake
+                *
+                * 2) To subject SSL negotiation to cluster timeout. By artificially
+                * setting ping_sent time to the time when SSL negotiation started, we
+                * are subjecting it to cluster timeout restrictions so that if SSL
+                * negotiation is taking unexpectedly long, there is something wrong
+                * and we want to retry
+                */
+                if(node->ping_sent == 0) node->ping_sent = link->ctime;
+                if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
+                        SSL_PERFORMANCE_MODE_LOW_LATENCY, node->ip, server.ssl_config.fd_to_sslconn,
+                        server.ssl_config.fd_to_sslconn_size) == NULL) {
+                    serverLog(LL_WARNING, "Could not create SSL connection for connecting with Cluster Node");
+                    //no cleanup required. Handshake timeout will automatically take care of freeing this node
+                    continue;
                 }
-#endif
+                if (aeCreateFileEvent(server.el, link->fd, AE_READABLE | AE_WRITABLE,
+                        sslNegotiateWithClusterNodeAsClient, link) == AE_ERR) {
+                    serverLog(LL_WARNING, "Could not create event handler SSL negotiation");
+                    //no cleanup required. Handshake timeout will automatically take care of freeing this node
+                    continue;
+                }
+            } else {
                 aeCreateFileEvent(server.el,link->fd,AE_READABLE,
                         clusterReadHandler,link);
-                clusterClientSetup(link);
-            } while(0);
+                clusterClientSetup(link);                
+            }
         }
     }
     dictReleaseIterator(di);
@@ -5166,29 +5141,25 @@ migrateCachedSocket* migrateGetSocket(client *c, robj *host, robj *port, long ti
     }
     anetEnableTcpNoDelay(server.neterr,fd);
 
-    do {
-#ifdef BUILD_SSL
-        if (server.ssl_config.enable_ssl) {
-            // Setup SSL connection, no need to check for timeout since it's done during negotiation
-            if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
-                    server.ssl_config.ssl_performance_mode, c->argv[1]->ptr,
-                    server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
-                sdsfree(name);
-                addReplySds(c,
-                    sdsnew("-SSLERR error initializing ssl connection for the target node\r\n"));
-                close(fd);
-                return NULL;
-            }
-            if (syncSslNegotiateForFd(fd, timeout) != C_OK) {
-                sdsfree(name);
-                addReplySds(c,
-                    sdsnew("-SSLERR error performing SSL negotiation with the target node\r\n"));
-                rclose(fd);
-                return NULL;
-            }
-            break;
+    if (isSSLEnabled()) {
+        // Setup SSL connection, no need to check for timeout since it's done during negotiation
+        if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
+                server.ssl_config.ssl_performance_mode, c->argv[1]->ptr,
+                server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
+            sdsfree(name);
+            addReplySds(c,
+                sdsnew("-SSLERR error initializing ssl connection for the target node\r\n"));
+            close(fd);
+            return NULL;
         }
-#endif
+        if (syncSslNegotiateForFd(fd, timeout) != C_OK) {
+            sdsfree(name);
+            addReplySds(c,
+                sdsnew("-SSLERR error performing SSL negotiation with the target node\r\n"));
+            rclose(fd);
+            return NULL;
+        }
+    } else {
         /* Check if it connects within the specified timeout. */
         if ((aeWait(fd, AE_WRITABLE, timeout) & AE_WRITABLE) == 0) {
             sdsfree(name);
@@ -5196,8 +5167,8 @@ migrateCachedSocket* migrateGetSocket(client *c, robj *host, robj *port, long ti
                 sdsnew("-IOERR error or timeout connecting to the client\r\n"));
             close(fd);
             return NULL;
-        }
-    } while(0);
+        }        
+    }
 
     /* Add to the cache and return it to the caller. */
     cs = zmalloc(sizeof(*cs));

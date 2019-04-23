@@ -29,9 +29,7 @@
 
 #include "server.h"
 #include "atomicvar.h"
-#ifdef BUILD_SSL
 #include "ssl.h"
-#endif
 #include <sys/uio.h>
 #include <math.h>
 #include <ctype.h>
