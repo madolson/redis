@@ -1737,6 +1737,7 @@ void clearReplicationId2(void);
 void chopReplicationBacklog(void);
 void replicationCacheMasterUsingMyself(void);
 void feedReplicationBacklog(void *ptr, size_t len);
+void syncWithMaster(aeEventLoop *el, int fd, void *privdata, int mask);
 
 /* Generic persistence functions */
 void startLoading(FILE *fp);

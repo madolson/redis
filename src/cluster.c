@@ -3502,7 +3502,6 @@ void clusterCron(void) {
 
         if (node->link == NULL) {
             int fd;
-            mstime_t old_ping_sent;
             clusterLink *link;
 
             fd = anetTcpNonBlockBindConnect(server.neterr, node->ip,
@@ -4392,7 +4391,7 @@ NULL
     } else if (!strcasecmp(c->argv[1]->ptr,"nodes") && c->argc == 2) {
         /* CLUSTER NODES */
         robj *o;
-        sds ci = clusterGenNodesDescription(0, false);
+        sds ci = clusterGenNodesDescription(0, 0);
 
         o = createObject(OBJ_STRING,ci);
         addReplyBulk(c,o);
@@ -4770,7 +4769,7 @@ NULL
 
         addReplyArrayLen(c,n->numslaves);
         for (j = 0; j < n->numslaves; j++) {
-            sds ni = clusterGenNodeDescription(n->slaves[j], false);
+            sds ni = clusterGenNodeDescription(n->slaves[j], 0);
             addReplyBulkCString(c,ni);
             sdsfree(ni);
         }

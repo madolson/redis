@@ -648,7 +648,7 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
             c->cluster_node = node;
         }
 #ifdef BUILD_SSL
-        if (config.enable_ssl == true){
+        if (config.enable_ssl){
             c->context = redisSslConnectNonBlock(ip,port);
         } else {
             c->context = redisConnectNonBlock(ip,port);
@@ -782,7 +782,7 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
     }
     if (config.idlemode == 0) {
 #ifdef BUILD_SSL
-        aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,config.enable_ssl == true ? sslNegotiationHandler : writeHandler, c);
+        aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,config.enable_ssl ? sslNegotiationHandler : writeHandler, c);
 #else
         aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
 #endif   

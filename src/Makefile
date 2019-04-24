@@ -79,16 +79,21 @@ DEBUG=-g -ggdb
 
 # SSL Build configuration
 ifeq ($(BUILD_SSL),yes)
+  OPENSSL_DIR?=/usr/local/opt/openssl
+
 	S2N_INCLUDE_DIR ?= ../deps/s2n/api
 	S2N_LIB_DIR ?= ../deps/s2n/lib
-	OPENSSL_INCLUDE_DIR ?= ../deps/openssl/include
-	OPENSSL_LIB_DIR ?= ../deps/openssl
+	OPENSSL_INCLUDE_DIR ?= $(OPENSSL_DIR)/include
+	OPENSSL_LIB_DIR ?= $(OPENSSL_DIR)/lib
 
-	SSL_TARGETS = openssl s2n
+	SSL_TARGETS = s2n
 
 	FINAL_CFLAGS += $(addprefix -I,$(S2N_INCLUDE_DIR)) $(addprefix -I,$(OPENSSL_INCLUDE_DIR)) $(addprefix -D,BUILD_SSL) 
 	FINAL_LDFLAGS += $(addprefix -L,$(S2N_LIB_DIR)) $(addprefix -L,$(OPENSSL_LIB_DIR))
-	FINAL_LIBS += $(S2N_LIB_DIR)/libs2n.a -lrt $(OPENSSL_LIB_DIR)/libssl.a $(OPENSSL_LIB_DIR)/libcrypto.a
+	FINAL_LIBS += $(S2N_LIB_DIR)/libs2n.a $(OPENSSL_LIB_DIR)/libssl.a $(OPENSSL_LIB_DIR)/libcrypto.a
+	ifneq ($(uname_S),Darwin)
+		FINAL_LIBS += -lrt
+	endif
 endif
 
 ifeq ($(uname_S),SunOS)
@@ -180,18 +185,13 @@ endif
 
 REDIS_SERVER_NAME=redis-server
 REDIS_SENTINEL_NAME=redis-sentinel
-REDIS_SERVER_OBJ=adlist.o quicklist.o ae.o anet.o dict.o server.o sds.o zmalloc.o lzf_c.o lzf_d.o pqsort.o zipmap.o sha1.o ziplist.o release.o networking.o util.o object.o db.o replication.o rdb.o t_string.o t_list.o t_set.o t_zset.o t_hash.o config.o aof.o pubsub.o multi.o debug.o sort.o intset.o syncio.o cluster.o crc16.o endianconv.o slowlog.o scripting.o bio.o rio.o rand.o memtest.o crc64.o bitops.o sentinel.o notify.o setproctitle.o blocked.o hyperloglog.o latency.o sparkline.o redis-check-rdb.o redis-check-aof.o geo.o lazyfree.o module.o evict.o expire.o geohash.o geohash_helper.o childinfo.o defrag.o siphash.o rax.o t_stream.o listpack.o localtime.o lolwut.o lolwut5.o acl.o gopher.o
+REDIS_SERVER_OBJ=ssl.o adlist.o quicklist.o ae.o anet.o dict.o server.o sds.o zmalloc.o lzf_c.o lzf_d.o pqsort.o zipmap.o sha1.o ziplist.o release.o networking.o util.o object.o db.o replication.o rdb.o t_string.o t_list.o t_set.o t_zset.o t_hash.o config.o aof.o pubsub.o multi.o debug.o sort.o intset.o syncio.o cluster.o crc16.o endianconv.o slowlog.o scripting.o bio.o rio.o rand.o memtest.o crc64.o bitops.o sentinel.o notify.o setproctitle.o blocked.o hyperloglog.o latency.o sparkline.o redis-check-rdb.o redis-check-aof.o geo.o lazyfree.o module.o evict.o expire.o geohash.o geohash_helper.o childinfo.o defrag.o siphash.o rax.o t_stream.o listpack.o localtime.o lolwut.o lolwut5.o acl.o gopher.o
 REDIS_CLI_NAME=redis-cli
 REDIS_CLI_OBJ=anet.o adlist.o dict.o redis-cli.o zmalloc.o release.o anet.o ae.o crc64.o siphash.o crc16.o
 REDIS_BENCHMARK_NAME=redis-benchmark
 REDIS_BENCHMARK_OBJ=ae.o anet.o redis-benchmark.o adlist.o dict.o zmalloc.o siphash.o redis-benchmark.o
 REDIS_CHECK_RDB_NAME=redis-check-rdb
 REDIS_CHECK_AOF_NAME=redis-check-aof
-
-# Add SSL objects to final build
-ifeq ($(BUILD_SSL),yes)
-	REDIS_SERVER_OBJ+=ssl.o
-endif
 
 all: $(REDIS_SERVER_NAME) $(REDIS_SENTINEL_NAME) $(REDIS_CLI_NAME) $(REDIS_BENCHMARK_NAME) $(REDIS_CHECK_RDB_NAME) $(REDIS_CHECK_AOF_NAME)
 	@echo ""

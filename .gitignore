@@ -25,6 +25,7 @@ ssl/*
 deps/lua/src/lua
 deps/lua/src/luac
 deps/lua/src/liblua.a
+deps/s2n
 .make-*
 .prerequisites
 *.dSYM

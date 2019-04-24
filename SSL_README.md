@@ -14,10 +14,11 @@ Redis with SSL is generally not compatible with Redis versions that are built wi
 The cluster bus protocol contains an extra attribute field for Redis with SSL, which means that nodes built with SSL will be unable to meet with Redis nodes built without SSL. This change is used to propagate the cluster-announce-endpoint to other clusters, so they can respond with the correct endpoint for clients.
 
 ## Building SSL version of Redis
-Redis with SSL requires building Redis with a new flag, "BUILD_SSL=yes". This builds a version of Redis that supports SSL. This build flag is used to limit the size of the Redis executable and optimize the code paths if SSL is not required.
+Redis with SSL requires building Redis with a new flag, "BUILD_SSL=yes". This builds a version of Redis that supports SSL. This build flag is used to limit the size of the Redis executable and optimize the code paths if SSL is not required. Redis built with SSL requires the installation of two dependencies, S2N and OpenSSL. These libraries are statically linked within redis, so they do not depend on their availability in whatever location you're installing your code. The assumption is that you will use the OpenSSL provided by your OS, but you can choose to build OpenSSL yourself and link it using the OPENSSL_DIR flag. 
 
-### Download the latest version of s2n and openssl to use during the build
-Redis with SSL requires the installation of two dependencies, S2N and OpenSSL. These libraries are statically linked into the Redis executable. These files are not provided by default in the Redis source code.
+### Download the latest version of s2n to use during the build
+Redis does not yet come with a version of s2n, so it needs to be downloaded.
+
 ```
 cd deps 
 ./download-ssl-deps.sh 
@@ -33,12 +34,6 @@ BUILD_SSL=yes make
 ```
 BUILD_SSL=yes make test
 BUILD_SSL=yes make test-ssl
-```
-
-### Troubleshooting building openssl and s2n on Ubuntu
-The following packages are required to build ssl with ubuntu
-```
-sudo apt-get install xutils-dev libssl-dev tcltls
 ```
 
 ## Creating SSL files needed for testing or production use
@@ -145,7 +140,7 @@ Certificates can be renewed by calling "config set ssl-renew-certificate (path t
 In order to use hostname validation as part of the SSL handshake, Redis with SSL supports announcing its endpoint using the cluster-announce-endpoint and cluster-interface-type parameters. Setting the cluster-interface-type to DNS will make cluster re-direct calls and cluster slot calls provide the cluster announce endpoint instead of the IP address. 
 
 ## Developing features that are compatible with SSL
-Developing a feature for support with SSL should be hidden behind "#ifdef BUILD_SSL" if it needs to access s2n or OpenSSL libraries. This is to maintain a smaller executable size and limit performance impact for Redis built without SSL. There are several helper functions defined to make the Redis code cleaner, and new ones should be defined if there are frequent uses of "#ifdef BUILD_SSL".
+Developing a feature for support with SSL make use of the "isSSLCompiled()" or "isSSLEnabled()" macros. #ifdefs should be limited to ssl.* and server.h so as to not impair the readability of the main code base. 
 
 ### Initializing SSL connections
 All SSL connections need to be initialized after the underlying TCP connection has been established and then they need to perform an SSL handshake. SSL negotiations are not handled synchronously in most places in the codebase - this is to prevent blocking the server while the SSL handshake is waiting for the the client/server to respond. Instead, you should use the sslNegotiate methods provided in ssl.c to perform asynchronous negotiation. Calling these functions will add a fileEvent to the event loop to handle the negotiation and your callback function will be called when the SSL handshake is completed. If the handshake fails, the client will be disconnected.

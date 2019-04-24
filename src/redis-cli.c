@@ -766,7 +766,7 @@ static int cliConnect(int flags) {
 
         if (config.hostsocket == NULL) {
 #ifdef BUILD_SSL
-            if (config.ssl_mode == true) {
+            if (config.ssl_mode) {
                 if(hiredisInitSsl() != REDIS_OK) {
                     fprintf(stderr, "Could not initialize SSL for hiredis client");
                     return REDIS_ERR;

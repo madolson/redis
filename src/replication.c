@@ -1939,20 +1939,18 @@ int connectWithMaster(void) {
     }
 
     if (isSSLEnabled()) {
-        if (server.ssl_config.enable_ssl == true) {
-            if (initSslConnection(SSL_CLIENT, fd,
-                            server.ssl_config.ssl_performance_mode, server.masterhost) == NULL) {
-                serverLog(LL_WARNING, "Error initializing SSL configuration for replication: '%s'",
-                        s2n_strerror(s2n_errno, "EN"));
-                goto error;
-            }
+        if (initSslConnection(SSL_CLIENT, fd,
+                        server.ssl_config.ssl_performance_mode, server.masterhost) == NULL) {
+            serverLog(LL_WARNING, "Error initializing SSL configuration for replication: '%s'",
+                    rstrerror(errno));
+            goto error;
+        }
 
-            if (aeCreateFileEvent(server.el, fd, AE_WRITABLE | AE_READABLE, sslNegotiateWithMaster, NULL) == AE_ERR) {
-                serverLog(LL_WARNING, "Can't create readable event for SYNC");
-                cleanupSslConnectionForFd(fd);
-                goto error;
-            }
-        }     
+        if (aeCreateFileEvent(server.el, fd, AE_WRITABLE | AE_READABLE, sslNegotiateWithMaster, NULL) == AE_ERR) {
+            serverLog(LL_WARNING, "Can't create readable event for SYNC");
+            cleanupSslConnectionForFd(fd);
+            goto error;
+        }
     } else {
         if (aeCreateFileEvent(server.el,fd,AE_READABLE|AE_WRITABLE,syncWithMaster,NULL) ==
         AE_ERR)
