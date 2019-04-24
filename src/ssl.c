@@ -2,163 +2,14 @@
 #include "cluster.h"
 #include "ssl.h"
 
+#ifdef BUILD_SSL
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/err.h>
 #include <openssl/bio.h>
 #include <openssl/pem.h>
-/* -------------------------- private prototypes ---------------------------- */
-// Helper functions for the class
-ssl_connection * getSslConnectionForFd(int fd);
+#endif
 
-static inline ssize_t sslRecv(int fd, void *buffer, size_t nbytes, s2n_blocked_status * blocked);
-
-// Functions for normal SLS negotiations
-static SslNegotiationStatus
-sslNegotiate(aeEventLoop *el, int fd, void *privdata, aeFileProc *post_handshake_handler,
-                int post_handshake_handler_mask, aeFileProc *sourceProcedure, char *sourceProcedureName);
-
-static int updateEventHandlerForSslHandshake(s2n_blocked_status blocked, aeEventLoop *el, int fd, void *privdata,
-                                             aeFileProc *sourceProc);
-
-// Functions for SSL configuration
-static int initClientSslConfig(ssl_t *ssl);
-
-static int initServerSslConfig(ssl_t *ssl);
-
-static struct s2n_config *
-initSslConfigForServer(const char *certificate, const char *privateKey, const char *dhParams,
-                       const char *cipherPrefs);
-
-static struct s2n_config *
-initSslConfigForClient(const char *cipher_prefs,
-                       const char *certificate, const char *rootCACertificatesPath);
-
-static struct s2n_config *
-initSslConfig(int is_server, const char *certificate, const char *private_key, const char *dh_params,
-              const char *cipher_prefs, const char *rootCACertificatesPath);
-
-uint8_t s2nVerifyHost(const char *hostName, size_t length, void *data);
-
-// Functions for SSL connections
-int cleanupSslConnection(struct ssl_connection *conn, int fd, int shutdown);
-
-static int shutdownSslConnection(ssl_connection *conn);
-
-static int freeSslConnection(ssl_connection *conn);
-
-/* Functions used for reading and parsing X509 certificates */
-static int getCnameFromCertificate(const char *certificate, char *subject_name);    
-
-int updateServerCertificateInformation(const char *certificate, char *not_before_date, char *not_after_date, long *serial);    
-
-int convertASN1TimeToString(ASN1_TIME *timePointer, char* outputBuffer, size_t length);
-
-X509 *getX509FromCertificate(const char *certificate);
-
-static void updateClientsUsingOldCertificate(void);
-
-/* Functions for handling SSL negotiation after a socket BGSave */ 
-void waitForSlaveToLoadRdbAfterRdbTransfer(aeEventLoop *el, int fd, void *privdata, int mask);
-
-static void sslNegotiateWithSlaveAfterSocketRdbTransfer(aeEventLoop *el, int fd, void *privdata, int mask);
- 
-static void sslNegotiateWithMasterAfterSocketRdbLoad(aeEventLoop *el, int fd, void *privdata, int mask);
-
-static SslNegotiationStatus sslNegotiateWithoutPostHandshakeHandler(aeEventLoop *el, int fd, void *privdata, aeFileProc *sourceProcedure,
-    char *sourceProcedureName);
-
-// Functions for processoring repeated reads                       
-int processRepeatedReads(struct aeEventLoop *eventLoop, long long id, void *clientData);
-
-void addRepeatedRead(ssl_connection *conn);
-
-void removeRepeatedRead(ssl_connection *conn);
-
-/* -------------------------- public function definitions ---------------------------- */
-
-/**
- * Initializes any global level resource required for SSL. This method
- * should be invoked at startup time
- */
-void initSsl(ssl_t *ssl) {
-    if (ssl->enable_ssl == 1) {
-        serverLog(LL_NOTICE, "Initializing SSL configuration");
-        setenv("S2N_ENABLE_CLIENT_MODE", "1", 1);
-        // MLOCK is used to keep memory from being moved to SWAP. However, S2N can run into 
-        // kernel limits for the number distinct mapped ranges assocciated to a process when
-        // a large number of clients are connected. Failed mlock calls will not free memory, 
-        // so pages will not get unmapped until the engine is rebooted. In order to avoid this, 
-        // we are unconditionally disabling MLOCK.
-        setenv("S2N_DONT_MLOCK", "1", 1);
-        if (s2n_init() < 0) {
-            serverLog(LL_WARNING, "Error running s2n_init(): '%s'. Exiting", s2n_strerror(s2n_errno, "EN"));
-            serverAssert(0);
-        }
-        //initialize openssl error strings
-        SSL_load_error_strings();
-        //required for cert validation
-        OpenSSL_add_all_algorithms();
-        
-        //initialize configuration for Redis to act as Server (regular mode and cluster bus server)
-        if (initServerSslConfig(ssl) == C_ERR) {
-            serverLog(LL_WARNING, "Error initializing server SSL configuration. Exiting.");
-            serverAssert(0);
-        }
-
-        //initialize configuration for Redis to act as client (Replica and cluster bus client)
-        if (initClientSslConfig(ssl) == C_ERR) {
-            serverLog(LL_WARNING, "Error initializing client SSL configuration. Exiting.");
-            serverAssert(0);
-        }
-        // The expected hostname from the certificate to use as part of hostname validation
-        ssl->expected_hostname = zmalloc(CERT_CNAME_MAX_LENGTH);
-        if (getCnameFromCertificate(ssl->ssl_certificate, ssl->expected_hostname) == C_ERR) {
-            serverLog(LL_WARNING, "Error while discovering expected hostname from certificate file");        
-            serverAssert(0);
-        }
-        
-        // Allocate space for not before and not after dates
-        ssl->certificate_not_after_date = zmalloc(CERT_DATE_MAX_LENGTH);
-        ssl->certificate_not_before_date = zmalloc(CERT_DATE_MAX_LENGTH);
-
-        if (updateServerCertificateInformation(ssl->ssl_certificate, 
-                ssl->certificate_not_before_date, ssl->certificate_not_after_date,
-                &server.ssl_config.certificate_serial) == C_ERR) {
-            serverLog(LL_WARNING, "Error while discovering not_after and not_before from certificate file");        
-            serverAssert(0);         
-        }
-        
-        //initialize array to store socked fd to SSL connections mapping
-        ssl->fd_to_sslconn_size = server.maxclients + CONFIG_FDSET_INCR;
-        ssl->fd_to_sslconn = zcalloc(sizeof(ssl_connection *) * ssl->fd_to_sslconn_size);
-        ssl->sslconn_with_cached_data = listCreate();
-    }
-}
-
-/**
- * Cleans any global level resources used by SSL. This method
- * should be invoked at shutdown time
- */
-void cleanupSsl(ssl_t *ssl) {
-    if (ssl->enable_ssl == 1) {
-        if (s2n_cleanup() < 0)
-            serverLog(LL_WARNING, "Error cleaning up SSL resources: %s", s2n_strerror(s2n_errno, "EN"));
-        if (s2n_config_free(ssl->server_ssl_config) < 0)
-            serverLog(LL_WARNING, "Error freeing server SSL config: %s", s2n_strerror(s2n_errno, "EN"));
-        if (s2n_config_free(ssl->client_ssl_config) < 0)
-            serverLog(LL_WARNING, "Error freeing client SSL config: %s", s2n_strerror(s2n_errno, "EN"));
-        ERR_free_strings();
-        //removes all ciphers and digests from internal table of digest algorithms and ciphers
-        EVP_cleanup();
-
-        listRelease(ssl->sslconn_with_cached_data);
-        zfree(ssl->expected_hostname);
-        zfree(ssl->fd_to_sslconn);
-        zfree(ssl->certificate_not_after_date);
-        zfree(ssl->certificate_not_before_date);
-    }
-}
 
 /**
  * Converts SSL performance mode string to corresponding integer constant.
@@ -176,6 +27,195 @@ char *getSslPerformanceModeStr(int mode) {
     if (mode == SSL_PERFORMANCE_MODE_LOW_LATENCY) return "low-latency";
     else if (mode == SSL_PERFORMANCE_MODE_HIGH_THROUGHPUT) return "high-throughput";
     else return "invalid input";
+}
+
+#ifdef BUILD_SSL
+/* -------------------------- private prototypes ---------------------------- */
+// Helper functions for the class
+ssl_connection * getSslConnectionForFd(int fd);
+
+static inline ssize_t sslRecv(int fd, void *buffer, size_t nbytes, s2n_blocked_status * blocked);
+
+// Functions for normal SLS negotiations
+static SslNegotiationStatus
+sslNegotiate(aeEventLoop *el, int fd, void *privdata, aeFileProc *post_handshake_handler,
+                int post_handshake_handler_mask, aeFileProc *sourceProcedure, char *sourceProcedureName);
+
+static int updateEventHandlerForSslHandshake(s2n_blocked_status blocked, aeEventLoop *el, int fd, void *privdata,
+                                             aeFileProc *sourceProc);
+
+static struct s2n_config *
+initSslConfigForServer(const char *certificate, struct s2n_cert_chain_and_key *chain_and_key, const char *dhParams,
+                       const char *cipherPrefs);
+static struct s2n_config *
+initSslConfigForClient(const char *cipher_prefs,
+                       const char *certificate, const char *rootCACertificatesPath);
+static struct s2n_config *
+initSslConfig(int is_server, const char *certificate, struct s2n_cert_chain_and_key *chain_and_key, const char *dh_params,
+              const char *cipher_prefs, const char *rootCACertificatesPath);
+uint8_t s2nVerifyHost(const char *hostName, size_t length, void *data);
+
+// Functions for SSL connections
+int cleanupSslConnection(struct ssl_connection *conn, int fd, int shutdown);
+static int shutdownSslConnection(ssl_connection *conn);
+static int freeSslConnection(ssl_connection *conn);
+
+/* Functions used for reading and parsing X509 certificates */
+static int getCnameFromCertificate(const char *certificate, char *subject_name);    
+int updateServerCertificateInformation(const char *certificate, char *not_before_date, char *not_after_date, long *serial);    
+int convertASN1TimeToString(ASN1_TIME *timePointer, char* outputBuffer, size_t length);
+X509 *getX509FromCertificate(const char *certificate);
+static void updateClientsUsingOldCertificate(void);
+
+/* Functions for handling SSL negotiation after a socket BGSave */ 
+void waitForSlaveToLoadRdbAfterRdbTransfer(aeEventLoop *el, int fd, void *privdata, int mask);
+static void sslNegotiateWithSlaveAfterSocketRdbTransfer(aeEventLoop *el, int fd, void *privdata, int mask);
+static void sslNegotiateWithMasterAfterSocketRdbLoad(aeEventLoop *el, int fd, void *privdata, int mask);
+static SslNegotiationStatus sslNegotiateWithoutPostHandshakeHandler(aeEventLoop *el, int fd, void *privdata, aeFileProc *sourceProcedure,
+    char *sourceProcedureName);
+
+// Functions for processoring repeated reads                       
+int processRepeatedReads(struct aeEventLoop *eventLoop, long long id, void *clientData);
+void addRepeatedRead(ssl_connection *conn);
+void removeRepeatedRead(ssl_connection *conn);
+
+/* -------------------------- public function definitions ---------------------------- */
+
+/**
+ * Initialize default values for SSL related global variables. It should be
+ * invoked at Redis startup to provide sane default values to SSL related
+ * variables
+ */
+void initSslConfigDefaults(ssl_t *ssl_config) {
+    ssl_config->enable_ssl = SSL_ENABLE_DEFAULT;
+    ssl_config->server_ssl_config = NULL;
+    ssl_config->cert_chain_and_key = NULL;
+    ssl_config->server_ssl_config_old = NULL;
+    ssl_config->cert_chain_and_key_old = NULL;
+    ssl_config->ssl_certificate = NULL;
+    ssl_config->ssl_certificate_file = NULL;
+    ssl_config->ssl_certificate_private_key = NULL;
+    ssl_config->ssl_certificate_private_key_file = NULL;
+    ssl_config->ssl_dh_params = NULL;
+    ssl_config->ssl_dh_params_file = NULL;
+    ssl_config->ssl_cipher_prefs = SSL_CIPHER_PREFS_DEFAULT;
+    ssl_config->server_ssl_config_creation_time = 0;
+    ssl_config->ssl_performance_mode = SSL_PERFORMANCE_MODE_DEFAULT;
+    ssl_config->client_ssl_config = NULL;
+    ssl_config->fd_to_sslconn = NULL;
+    ssl_config->fd_to_sslconn_size = 0;
+    ssl_config->root_ca_certs_path = NULL;
+    ssl_config->sslconn_with_cached_data = NULL;
+    ssl_config->repeated_reads_task_id = AE_ERR;
+    ssl_config->total_repeated_reads = 0;
+    ssl_config->max_repeated_read_list_length = 0;
+    ssl_config->expected_hostname = NULL;
+    ssl_config->certificate_not_after_date = NULL;
+    ssl_config->certificate_not_before_date = NULL;
+    ssl_config->connections_to_current_certificate = 0;
+    ssl_config->connections_to_previous_certificate = 0;
+    ssl_config->certificate_serial = 0;
+}
+
+/**
+ * Initializes any global level resource required for SSL. This method
+ * should be invoked at startup time
+ */
+void initSsl(ssl_t *ssl) {
+    if (!isSSLEnabled()) return;
+
+    serverLog(LL_NOTICE, "Initializing SSL configuration");
+    setenv("S2N_ENABLE_CLIENT_MODE", "1", 1);
+    // MLOCK is used to keep memory from being moved to SWAP. However, S2N can run into 
+    // kernel limits for the number distinct mapped ranges assocciated to a process when
+    // a large number of clients are connected. Failed mlock calls will not free memory, 
+    // so pages will not get unmapped until the engine is rebooted. In order to avoid this, 
+    // we are unconditionally disabling MLOCK.
+    setenv("S2N_DONT_MLOCK", "1", 1);
+    if (s2n_init() < 0) {
+        serverLog(LL_WARNING, "Error running s2n_init(): '%s'. Exiting", s2n_strerror(s2n_errno, "EN"));
+        serverAssert(0);
+    }
+    //initialize openssl error strings
+    SSL_load_error_strings();
+    //required for cert validation
+    OpenSSL_add_all_algorithms();
+
+    // Initialize Cert and chain structure
+    ssl->cert_chain_and_key = s2n_cert_chain_and_key_new();
+    if (s2n_cert_chain_and_key_load_pem(ssl->cert_chain_and_key,
+            ssl->ssl_certificate, ssl->ssl_certificate_private_key) < 0) {
+        serverLog(LL_WARNING, "Error initializing server SSL configuration");
+        serverAssert(0);         
+    }
+
+    //initialize configuration for Redis to act as Server (client connections and cluster bus server)
+    ssl->server_ssl_config = initSslConfigForServer(ssl->ssl_certificate, ssl->cert_chain_and_key, ssl->ssl_dh_params, 
+        ssl->ssl_cipher_prefs);
+    if (!ssl->server_ssl_config) {
+        serverLog(LL_WARNING, "Error initializing server SSL configuration");
+        serverAssert(0);
+    }
+    ssl->server_ssl_config_creation_time = time(NULL);
+
+    //initialize configuration for Redis to act as Client (replication connections and cluster bus clients)
+    ssl->client_ssl_config = initSslConfigForClient(ssl->ssl_cipher_prefs, 
+        ssl->ssl_certificate, ssl->root_ca_certs_path);
+
+    if (!ssl->client_ssl_config) {
+        serverLog(LL_WARNING, "Error initializing client SSL configuration");
+        serverAssert(0);
+    }
+
+    // The expected hostname from the certificate to use as part of hostname validation
+    ssl->expected_hostname = zmalloc(CERT_CNAME_MAX_LENGTH);
+    if (getCnameFromCertificate(ssl->ssl_certificate, ssl->expected_hostname) == C_ERR) {
+        serverLog(LL_WARNING, "Error while discovering expected hostname from certificate file");        
+        serverAssert(0);
+    }
+    
+    // Allocate space for not before and not after dates
+    ssl->certificate_not_after_date = zmalloc(CERT_DATE_MAX_LENGTH);
+    ssl->certificate_not_before_date = zmalloc(CERT_DATE_MAX_LENGTH);
+
+    if (updateServerCertificateInformation(ssl->ssl_certificate, 
+            ssl->certificate_not_before_date, ssl->certificate_not_after_date,
+            &server.ssl_config.certificate_serial) == C_ERR) {
+        serverLog(LL_WARNING, "Error while discovering not_after and not_before from certificate file");        
+        serverAssert(0);         
+    }
+    
+    //initialize array to store socked fd to SSL connections mapping
+    ssl->fd_to_sslconn_size = server.maxclients + CONFIG_FDSET_INCR;
+    ssl->fd_to_sslconn = zcalloc(sizeof(ssl_connection *) * ssl->fd_to_sslconn_size);
+    ssl->sslconn_with_cached_data = listCreate();
+}
+
+/**
+ * Cleans any global level resources used by SSL. This method
+ * should be invoked at shutdown time
+ */
+void cleanupSsl(ssl_t *ssl) {
+    if (!isSSLEnabled()) return;
+
+    if (s2n_cleanup() < 0)
+        serverLog(LL_WARNING, "Error cleaning up SSL resources: %s", s2n_strerror(s2n_errno, "EN"));
+    if (s2n_config_free(ssl->server_ssl_config) < 0)
+        serverLog(LL_WARNING, "Error freeing server SSL config: %s", s2n_strerror(s2n_errno, "EN"));
+    if (s2n_config_free(ssl->client_ssl_config) < 0)
+        serverLog(LL_WARNING, "Error freeing client SSL config: %s", s2n_strerror(s2n_errno, "EN"));
+    if (s2n_cert_chain_and_key_free(ssl->cert_chain_and_key) < 0)
+        serverLog(LL_WARNING, "Error cert chain and key: %s", s2n_strerror(s2n_errno, "EN"));
+
+    ERR_free_strings();
+    //removes all ciphers and digests from internal table of digest algorithms and ciphers
+    EVP_cleanup();
+
+    listRelease(ssl->sslconn_with_cached_data);
+    zfree(ssl->expected_hostname);
+    zfree(ssl->fd_to_sslconn);
+    zfree(ssl->certificate_not_after_date);
+    zfree(ssl->certificate_not_before_date);
 }
 
 /**
@@ -284,48 +324,12 @@ inline const char *sslstrerror(void) {
 }
 
 /**
- * Initialize default values for SSL related global variables. It should be
- * invoked at Redis startup to provide sane default values to SSL related
- * variables
- */
-void initSslConfigDefaults(ssl_t *ssl_config) {
-    ssl_config->enable_ssl = SSL_ENABLE_DEFAULT;
-    ssl_config->ssl_certificate = NULL;
-    ssl_config->ssl_certificate_file = NULL;
-    ssl_config->ssl_certificate_private_key = NULL;
-    ssl_config->ssl_certificate_private_key_file = NULL;
-    ssl_config->ssl_dh_params = NULL;
-    ssl_config->ssl_dh_params_file = NULL;
-    ssl_config->ssl_cipher_prefs = SSL_CIPHER_PREFS_DEFAULT;
-    ssl_config->server_ssl_config = NULL;
-    ssl_config->server_ssl_config_creation_time = 0;
-    ssl_config->ssl_performance_mode = SSL_PERFORMANCE_MODE_DEFAULT;
-    ssl_config->client_ssl_config = NULL;
-    ssl_config->fd_to_sslconn = NULL;
-    ssl_config->fd_to_sslconn_size = 0;
-    ssl_config->server_ssl_config_old = NULL;
-    ssl_config->root_ca_certs_path = NULL;
-    ssl_config->sslconn_with_cached_data = NULL;
-    ssl_config->repeated_reads_task_id = AE_ERR;
-    ssl_config->total_repeated_reads = 0;
-    ssl_config->max_repeated_read_list_length = 0;
-    ssl_config->expected_hostname = NULL;
-    ssl_config->certificate_not_after_date = NULL;
-    ssl_config->certificate_not_before_date = NULL;
-    ssl_config->connections_to_current_certificate = 0;
-    ssl_config->connections_to_previous_certificate = 0;
-    ssl_config->certificate_serial = 0;
-}
-
-/**
  * Performs SSL related setup for a client. It includes creating and initializing an SSL connection,
  * and registering an event handler for SSL negotiation
  */
-int setupSslOnClient(client *c, int fd, int ssl_performance_mode, struct ssl_connection **fd_to_sslconn,
-                        int fd_to_sslconn_size) {
+int setupSslOnClient(client *c, int fd, int ssl_performance_mode) {
 
-    struct ssl_connection *ssl_conn = initSslConnection(S2N_SERVER, server.ssl_config.server_ssl_config, fd, ssl_performance_mode, NULL,
-        fd_to_sslconn, fd_to_sslconn_size);
+    struct ssl_connection *ssl_conn = initSslConnection(SSL_SERVER, fd, ssl_performance_mode, NULL);
     if (!ssl_conn) {
         serverLog(LL_WARNING, "Error getting new s2n connection for client with fd: %d, Error: '%s'", fd,
 
@@ -355,8 +359,19 @@ int setupSslOnClient(client *c, int fd, int ssl_performance_mode, struct ssl_con
  *  - Create an entry for Socket FD to SSL connection mapping
  */
 ssl_connection *
-initSslConnection(s2n_mode connection_mode, struct s2n_config *config, int fd, int ssl_performance_mode,
-               char *masterhost, struct ssl_connection **fd_to_sslconn, int fd_to_sslconn_size) {
+initSslConnection(ssl_mode mode, int fd, int ssl_performance_mode, char *masterhost) {
+        s2n_mode connection_mode;
+    struct s2n_config *config;
+
+    if (mode == SSL_SERVER) {
+        connection_mode = S2N_SERVER;
+        config = server.ssl_config.server_ssl_config;
+    } else if(mode == SSL_CLIENT) {
+        connection_mode = S2N_CLIENT;
+        config = server.ssl_config.client_ssl_config;
+    } else {
+        return NULL;
+    }
 
     ssl_connection *sslconn = zmalloc(sizeof(ssl_connection));
     if (!sslconn) {
@@ -420,11 +435,11 @@ initSslConnection(s2n_mode connection_mode, struct s2n_config *config, int fd, i
     }
 
     // Create an entry for Socket FD to SSL connection mapping
-    serverAssert(fd < fd_to_sslconn_size);
-    fd_to_sslconn[fd] = sslconn;
+    serverAssert(fd < server.ssl_config.fd_to_sslconn_size);
+    server.ssl_config.fd_to_sslconn[fd] = sslconn;
     serverLog(LL_DEBUG, "SSL Connection setup successfully for fd %d", fd);
     return sslconn;
-
+                        
 error:
     freeSslConnection(sslconn);
     return NULL;
@@ -601,9 +616,8 @@ void startSslNegotiateWithSlaveAfterRdbTransfer(struct client *slave) {
     if (cleanupSslConnectionForFdWithoutShutdown(slave->fd) != C_OK) {
         goto error;
     }
-    if (initSslConnection(S2N_SERVER, server.ssl_config.server_ssl_config, slave->fd,
-            server.ssl_config.ssl_performance_mode, NULL,
-            server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
+    if (initSslConnection(SSL_SERVER, slave->fd,
+            server.ssl_config.ssl_performance_mode, NULL) == NULL) {
         goto error;          
     }
     aeDeleteFileEvent(server.el, slave->fd, AE_READABLE | AE_WRITABLE);
@@ -738,11 +752,21 @@ int resizeFdToSslConnSize(ssl_t *ssl, unsigned int setsize) {
 int renewCertificate(char *new_certificate, char *new_private_key, char *new_certificate_filename,
                      char *new_private_key_filename) {
     serverLog(LL_NOTICE, "Initializing SSL configuration for new certificate");
-    struct s2n_config *new_config = initSslConfigForServer(new_certificate, new_private_key,
+
+    // Initialize Cert and chain structure
+    struct s2n_cert_chain_and_key *new_chain_and_key = s2n_cert_chain_and_key_new();
+    if (s2n_cert_chain_and_key_load_pem(new_chain_and_key,
+            new_certificate, new_private_key) < 0) {
+        serverLog(LL_WARNING, "Error initializing SSL key and chain");
+        return C_ERR;       
+    }
+
+    struct s2n_config *new_config = initSslConfigForServer(new_certificate, new_chain_and_key,
                                                            server.ssl_config.ssl_dh_params,
                                                            server.ssl_config.ssl_cipher_prefs);
     if (new_config == NULL) {
         serverLog(LL_DEBUG, "Error creating SSL configuration using new certificate");
+        s2n_cert_chain_and_key_free(new_chain_and_key);
         return C_ERR;
     }
 
@@ -755,6 +779,8 @@ int renewCertificate(char *new_certificate, char *new_private_key, char *new_cer
         serverLog(LL_DEBUG, "Failed to read not_before and not_after date from new certificate");
         zfree(newNotBeforeDate);
         zfree(newNotAfterDate);
+        s2n_cert_chain_and_key_free(new_chain_and_key);
+        s2n_config_free(new_config);
         return C_ERR;
     }
 
@@ -764,13 +790,19 @@ int renewCertificate(char *new_certificate, char *new_private_key, char *new_cer
     //clients using oldest certificate to stay within 2 certificate limit
     updateClientsUsingOldCertificate();
 
-    //save the SSL configuration for the expiring certificate
-    //We gotta keep it as there are existing connections using this configuration
-    server.ssl_config.server_ssl_config_old = server.ssl_config.server_ssl_config;
+    if (server.ssl_config.server_ssl_config_old) {
+        //Now that no client is using this config, free this config
+        s2n_config_free(server.ssl_config.server_ssl_config_old);
+        server.ssl_config.server_ssl_config_old = server.ssl_config.server_ssl_config;
+
+        s2n_cert_chain_and_key_free(server.ssl_config.cert_chain_and_key_old);
+        server.ssl_config.cert_chain_and_key_old = server.ssl_config.cert_chain_and_key;
+    }
 
     //start using new configuration. Any new connections
     //will start using new certificate from this point onwards
     server.ssl_config.server_ssl_config = new_config;
+    server.ssl_config.cert_chain_and_key = new_chain_and_key;
     server.ssl_config.server_ssl_config_creation_time = time(NULL);
 
     //free the memory used by old stuff
@@ -1098,9 +1130,7 @@ void sslNegotiateWithMasterAfterSocketRdbLoad(aeEventLoop *el, int fd, void *pri
             return;
         }
         
-        if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
-                server.ssl_config.ssl_performance_mode, server.masterhost,
-                server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
+        if (initSslConnection(SSL_CLIENT, fd, server.ssl_config.ssl_performance_mode, server.masterhost) == NULL) {
             cancelReplicationHandshake();
             return;
         }
@@ -1216,42 +1246,6 @@ sslNegotiateWithoutPostHandshakeHandler(aeEventLoop *el, int fd, void *privdata,
     return sslNegotiate(el, fd, privdata, NULL, AE_NONE, sourceProcedure, sourceProcedureName);
 }
 
-/*
- * Initialize SSL configuration to act as client
- * (e.g. replication client, cluster bus client)
- */
-int initClientSslConfig(ssl_t *ssl) {
-    if (ssl->enable_ssl && ssl->client_ssl_config == NULL) {
-
-        ssl->client_ssl_config = initSslConfigForClient(ssl->ssl_cipher_prefs,
-                                                           ssl->ssl_certificate,
-                                                           ssl->root_ca_certs_path);
-
-        if (!ssl->client_ssl_config) {
-            serverLog(LL_WARNING, "Error initializing client SSL configuration");
-            return C_ERR;
-        }
-    }
-    return C_OK;
-}
-
-/**
- * Initializes SSL configuration to act as server
- * (e.g. replication master, cluster bus master, query processor server)
- */
-int initServerSslConfig(ssl_t *ssl) {
-    if (ssl->enable_ssl && ssl->server_ssl_config == NULL) {
-        ssl->server_ssl_config = initSslConfigForServer(ssl->ssl_certificate, ssl->ssl_certificate_private_key,
-                                                           ssl->ssl_dh_params, ssl->ssl_cipher_prefs);
-        if (!ssl->server_ssl_config) {
-            serverLog(LL_WARNING, "Error initializing server SSL configuration");
-            return C_ERR;
-        }
-        ssl->server_ssl_config_creation_time = time(NULL);
-    }
-    return C_OK;
-}
-
 /**
  * shuts down the SSL connection. It effectively sends
  * a SHUTDOWN tls alert to the peer (as a SSL best practice before
@@ -1301,9 +1295,9 @@ int freeSslConnection(ssl_connection *conn) {
 }
 
 static struct s2n_config *
-initSslConfigForServer(const char *certificate, const char *privateKey, const char *dhParams,
+initSslConfigForServer(const char *certificate, struct s2n_cert_chain_and_key *chain_and_key, const char *dhParams,
                        const char *cipherPrefs) {
-    return initSslConfig(1, certificate, privateKey, dhParams, cipherPrefs, NULL);
+    return initSslConfig(1, certificate, chain_and_key, dhParams, cipherPrefs, NULL);
 }
 
 static struct s2n_config *
@@ -1313,7 +1307,7 @@ initSslConfigForClient(const char *cipher_prefs,
 }
 
 static struct s2n_config *
-initSslConfig(int is_server, const char *certificate, const char *private_key, const char *dh_params,
+initSslConfig(int is_server, const char *certificate, struct s2n_cert_chain_and_key *chain_and_key, const char *dh_params,
               const char *cipher_prefs, const char *rootCACertificatesPath) {
     serverLog(LL_DEBUG, "Initializing %s SSL configuration", is_server ? "Server" : "Client");
     struct s2n_config *ssl_config = s2n_config_new();
@@ -1322,8 +1316,8 @@ initSslConfig(int is_server, const char *certificate, const char *private_key, c
         return NULL;
     }
 
-    if (is_server && s2n_config_add_cert_chain_and_key(ssl_config, certificate,
-                                                               private_key) < 0) {
+    if (is_server && s2n_config_add_cert_chain_and_key_to_store(ssl_config,
+                                                               chain_and_key) < 0) {
         serverLog(LL_WARNING, "Error adding certificate/key to s2n config: '%s'.",
                   s2n_strerror(s2n_errno, "EN"));
         goto config_error;
@@ -1396,9 +1390,6 @@ static void updateClientsUsingOldCertificate(void) {
                     ssl_conn->connection_flags |= OLD_CERTIFICATE_FLAG;
                 }
             }
-            //Now that no client is using this config, free this config
-            s2n_config_free(server.ssl_config.server_ssl_config_old);
-            server.ssl_config.server_ssl_config_old = NULL;
             serverLog(LL_WARNING, "Disconnected %d clients using very old certificate", clients_disconnected);
         }else{
             // If there is no old config, just update the connection properties
@@ -1489,3 +1480,4 @@ void removeRepeatedRead(ssl_connection *conn) {
 
     // processRepeatedReads task is responsible for self-terminating when no more reads
 }
+#endif

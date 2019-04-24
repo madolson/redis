@@ -488,7 +488,7 @@ typedef long long mstime_t; /* millisecond time type. */
 #define serverAssert(_e) ((_e)?(void)0 : (_serverAssert(#_e,__FILE__,__LINE__),_exit(1)))
 #define serverPanic(...) _serverPanic(__FILE__,__LINE__,__VA_ARGS__),_exit(1)
 
-/* Macros to override I/O calls with ssl calls */
+/* Macros to help simplify SSL code path */
 #ifdef BUILD_SSL
 #define rstrerror(errno) sslstrerror()
 #define rread(fd, buffer, bytes) sslRead((fd), (buffer), (bytes))

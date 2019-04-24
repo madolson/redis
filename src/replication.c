@@ -1940,9 +1940,8 @@ int connectWithMaster(void) {
 
     if (isSSLEnabled()) {
         if (server.ssl_config.enable_ssl == true) {
-            if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
-                            server.ssl_config.ssl_performance_mode,server.masterhost,
-                            server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
+            if (initSslConnection(SSL_CLIENT, fd,
+                            server.ssl_config.ssl_performance_mode, server.masterhost) == NULL) {
                 serverLog(LL_WARNING, "Error initializing SSL configuration for replication: '%s'",
                         s2n_strerror(s2n_errno, "EN"));
                 goto error;

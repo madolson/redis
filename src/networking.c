@@ -105,8 +105,7 @@ client *createClient(int fd) {
                     return NULL;                        
                 }
             } else {
-                if (setupSslOnClient(c, fd, server.ssl_config.ssl_performance_mode, server.ssl_config.fd_to_sslconn,
-                        server.ssl_config.fd_to_sslconn_size) == C_ERR) {
+                if (setupSslOnClient(c, fd, server.ssl_config.ssl_performance_mode) == C_ERR) {
                     close(fd);
                     zfree(c);
                     return NULL;

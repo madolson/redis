@@ -667,8 +667,7 @@ void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         link->fd = cfd;
         if (isSSLEnabled()) {
             serverLog(LL_DEBUG, "Initializing SSL connection for cluster node %s:%d", cip, cport);
-            if (initSslConnection(S2N_SERVER, server.ssl_config.server_ssl_config, cfd, SSL_PERFORMANCE_MODE_LOW_LATENCY, NULL,
-                            server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
+            if (initSslConnection(SSL_SERVER, cfd, SSL_PERFORMANCE_MODE_LOW_LATENCY, NULL) == NULL) {
                 serverLog(LL_WARNING, "Error initializing ssl connection for cluster node %s:%d", cip, cport);
                 freeClusterLink(link);
                 return;
@@ -3536,9 +3535,8 @@ void clusterCron(void) {
                 * and we want to retry
                 */
                 if(node->ping_sent == 0) node->ping_sent = link->ctime;
-                if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
-                        SSL_PERFORMANCE_MODE_LOW_LATENCY, node->ip, server.ssl_config.fd_to_sslconn,
-                        server.ssl_config.fd_to_sslconn_size) == NULL) {
+                if (initSslConnection(SSL_CLIENT, fd,
+                        SSL_PERFORMANCE_MODE_LOW_LATENCY, node->ip) == NULL) {
                     serverLog(LL_WARNING, "Could not create SSL connection for connecting with Cluster Node");
                     //no cleanup required. Handshake timeout will automatically take care of freeing this node
                     continue;
@@ -5143,9 +5141,8 @@ migrateCachedSocket* migrateGetSocket(client *c, robj *host, robj *port, long ti
 
     if (isSSLEnabled()) {
         // Setup SSL connection, no need to check for timeout since it's done during negotiation
-        if (initSslConnection(S2N_CLIENT, server.ssl_config.client_ssl_config, fd,
-                server.ssl_config.ssl_performance_mode, c->argv[1]->ptr,
-                server.ssl_config.fd_to_sslconn, server.ssl_config.fd_to_sslconn_size) == NULL) {
+        if (initSslConnection(SSL_CLIENT, fd,
+                server.ssl_config.ssl_performance_mode, c->argv[1]->ptr) == NULL) {
             sdsfree(name);
             addReplySds(c,
                 sdsnew("-SSLERR error initializing ssl connection for the target node\r\n"));
