@@ -2315,8 +2315,6 @@ void initServerConfig(void) {
     server.lazyfree_lazy_server_del = CONFIG_DEFAULT_LAZYFREE_LAZY_SERVER_DEL;
     server.always_show_logo = CONFIG_DEFAULT_ALWAYS_SHOW_LOGO;
     server.lua_time_limit = LUA_SCRIPT_TIME_LIMIT;
-    server.client_cluster_interface_type = CLUSTER_INTERFACE_TYPE_IP;
-    server.cluster_announce_endpoint = NULL;
     server.master_replication_rdb_save_info = NULL;
 
     initSslConfigDefaults(&server.ssl_config);;

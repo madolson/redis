@@ -543,8 +543,6 @@ close((fd))
 #define REDISMODULE_TYPE_ENCVER(id) (id & REDISMODULE_TYPE_ENCVER_MASK)
 #define REDISMODULE_TYPE_SIGN(id) ((id & ~((uint64_t)REDISMODULE_TYPE_ENCVER_MASK)) >>REDISMODULE_TYPE_ENCVER_BITS)
 
-typedef enum {CLUSTER_INTERFACE_TYPE_NONE = -1, CLUSTER_INTERFACE_TYPE_IP, CLUSTER_INTERFACE_TYPE_DNS} cluster_interface_type;
-
 struct RedisModule;
 struct RedisModuleIO;
 struct RedisModuleDigest;
@@ -1393,9 +1391,6 @@ struct redisServer {
     pthread_mutex_t unixtime_mutex;
 
     struct rdbSaveInfo * master_replication_rdb_save_info; /* Used to store the save info for after ssl handshake */
-
-    char *cluster_announce_endpoint; /* Endpoint address to announce on cluster bus, only for ssl enabled */
-    cluster_interface_type client_cluster_interface_type; /* Which endpoint to show to clients, only for ssl enabled */
     ssl_t ssl_config; /* SSL configuration */
 };
 

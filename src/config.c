@@ -143,21 +143,6 @@ int yesnotoi(char *s) {
     else return -1;
 }
 
-int parseAnnounceEndpoint(char *s, int resolveDns) {
-    /* Make sure that provided dns name is valid if resolveDns is 1 */
-    char parsed_ip_address[DNS_NAME_STR_LEN];
-    if (!resolveDns || anetResolve(NULL,s,parsed_ip_address,
-            sizeof(parsed_ip_address)) == ANET_OK) {
-        if (server.cluster_announce_endpoint) {
-            zfree(server.cluster_announce_endpoint);
-        }
-        server.cluster_announce_endpoint= zcalloc(DNS_NAME_STR_LEN);
-        strcpy(server.cluster_announce_endpoint, s);
-        return 1;
-    }
-    return 0;
-}
-
 int loadFile(const char *filePath, char **buffer) {
     serverLog(LL_VERBOSE, "Loading file: %s", filePath);
     FILE *fp;
@@ -913,27 +898,6 @@ void loadServerConfigFromString(char *config) {
                 goto loaderr;
             }
             server.ssl_config.ssl_performance_mode = sslPerformanceMode;
-        } else if (!strcasecmp(argv[0],"cluster-interface-type") && argc == 2) {
-            int interface_type = parseClusterInterfaceType(argv[1]);
-            if(interface_type == CLUSTER_INTERFACE_TYPE_NONE) {
-                err = "Invalid value specified for cluster-interface-type. Valid values are 'ip' or 'dns'";
-                goto loaderr;
-            }
-            server.client_cluster_interface_type = interface_type;
-        } else if (!strcasecmp(argv[0],"cluster-announce-endpoint") && (argc == 2 || argc == 3)) {
-            int resolveDns = 1;
-            if (argc == 3) {
-                // Allow overriding the validity of DNS names primarily for tests
-                resolveDns = yesnotoi(argv[2]);
-                if (resolveDns == -1) {
-                    err = "resolveDns argument must be 'yes' or 'no'";
-                    goto loaderr;
-                }
-            }
-            if(!parseAnnounceEndpoint(argv[1], resolveDns)) {
-                err = "Invalid dns name specified for cluster-announce-endpoint";
-                goto loaderr;
-            }
         } else {
             err = "Bad directive or wrong number of arguments"; goto loaderr;
         }
@@ -969,15 +933,6 @@ void loadServerConfigFromString(char *config) {
             err = "root-ca-certs-path not provided or does not exist";
             goto loaderr;
         }
-    }
-
-    if(server.client_cluster_interface_type == CLUSTER_INTERFACE_TYPE_DNS) {
-        if(server.cluster_announce_endpoint[0] == '\0') {
-            err = "cluster-interface-type is equal to dns but cluster-announce-endpoint is not provided";
-            goto loaderr;
-        }
-    }else{
-        server.client_cluster_interface_type = CLUSTER_INTERFACE_TYPE_IP;
     }
 
     sdsfreesplitres(lines,totlines);
@@ -1295,42 +1250,6 @@ ssl_renew_error:
         if(newPrivateKeyFileName != NULL) zfree(newPrivateKeyFileName);
         sdsfreesplitres(v,vlen);
         return;
-    } config_set_special_field("cluster-announce-endpoint") {
-        int vlen;
-        sds *v = sdssplitlen(o->ptr,sdslen(o->ptr)," ",1,&vlen);
- 
-        if (vlen != 1 && vlen != 2) {
-            sdsfreesplitres(v, vlen);
-            goto badfmt;
-        }
- 
-        if(server.cluster->myself != NULL) {
-            int resolveDns = 1;
-            if (vlen == 2) {
-                resolveDns = yesnotoi(v[1]);
-                if (resolveDns == -1) {
-                    sdsfreesplitres(v, vlen);
-                    goto badfmt;
-                }
-            }
- 
-            // Updates and sets cluster announce endpoint
-            if(!parseAnnounceEndpoint(v[0], resolveDns)) {
-                sdsfreesplitres(v, vlen);
-                goto badfmt;
-            }
-        }
-        sdsfreesplitres(v, vlen);
-    } config_set_special_field("cluster-interface-type") {
-        int interface_type = parseClusterInterfaceType(o->ptr);
-        if (!server.cluster_enabled || interface_type == CLUSTER_INTERFACE_TYPE_NONE) {
-            goto badfmt;
-        }
-
-        if (server.cluster_announce_endpoint == NULL && interface_type == CLUSTER_INTERFACE_TYPE_DNS) {
-            goto badfmt;
-        }
-        server.client_cluster_interface_type = interface_type;
     } config_set_special_field_with_alias("slave-announce-ip",
                                           "replica-announce-ip")
     {

@@ -55,7 +55,7 @@ void clusterSendFail(char *nodename);
 void clusterSendFailoverAuthIfNeeded(clusterNode *node, clusterMsg *request);
 void clusterUpdateState(void);
 int clusterNodeGetSlotBit(clusterNode *n, int slot);
-sds clusterGenNodesDescription(int filter, int internalUse);
+sds clusterGenNodesDescription(int filter);
 clusterNode *clusterLookupNode(const char *name);
 int clusterNodeAddSlave(clusterNode *master, clusterNode *slave);
 int clusterAddSlot(clusterNode *n, int slot);
@@ -81,14 +81,6 @@ void moduleCallClusterReceivers(const char *sender_id, uint64_t module_id, uint8
  * Initialization
  * -------------------------------------------------------------------------- */
 
-/**
- * Converts cluster_interface_type str to corresponding enum
- */
-int parseClusterInterfaceType(char *typeString) {
-    if(!strcasecmp(typeString, "ip")) return CLUSTER_INTERFACE_TYPE_IP;
-    else if(!strcasecmp(typeString, "dns")) return CLUSTER_INTERFACE_TYPE_DNS;
-    else return CLUSTER_INTERFACE_TYPE_NONE;
-}
 
 /* Load the cluster config from 'filename'.
  *
@@ -178,21 +170,12 @@ int clusterLoadConfig(char *filename) {
         *p = '\0';
         memcpy(n->ip,argv[1],strlen(argv[1])+1);
         char *port = p+1;
-#ifdef BUILD_SSL
-        char *endpoint = strchr(port, ',');
-#endif
+
         char *busp = strchr(port,'@');
         if (busp) {
             *busp = '\0';
             busp++;
         }
-
-#ifdef BUILD_SSL
-        /* data-endpoint, required but can be an empty string */
-        *endpoint = '\0';
-        endpoint = endpoint + 1;
-        strcpy(n->endpoint, endpoint);
-#endif
 
         n->port = atoi(port);
         /* In older versions of nodes.conf the "@busport" part is missing.
@@ -339,7 +322,7 @@ int clusterSaveConfig(int do_fsync) {
 
     /* Get the nodes description and concatenate our "vars" directive to
      * save currentEpoch and lastVoteEpoch. */
-    ci = clusterGenNodesDescription(CLUSTER_NODE_HANDSHAKE, 1);
+    ci = clusterGenNodesDescription(CLUSTER_NODE_HANDSHAKE);
     ci = sdscatprintf(ci,"vars currentEpoch %llu lastVoteEpoch %llu\n",
         (unsigned long long) server.cluster->currentEpoch,
         (unsigned long long) server.cluster->lastVoteEpoch);
@@ -740,9 +723,6 @@ clusterNode *createClusterNode(char *nodename, int flags) {
     node->fail_time = 0;
     node->link = NULL;
     memset(node->ip,0,sizeof(node->ip));
-#ifdef BUILD_SSL
-    memset(node->endpoint, 0, sizeof(node->endpoint));
-#endif
     node->port = 0;
     node->cport = 0;
     node->fail_reports = listCreate();
@@ -1380,22 +1360,12 @@ void clusterProcessGossipSection(clusterMsg *hdr, clusterLink *link) {
 
         if (server.verbosity == LL_DEBUG) {
             ci = representClusterNodeFlags(sdsempty(), flags);
-#ifdef BUILD_SSL
-            serverLog(LL_DEBUG,"GOSSIP %.40s %s:%d@%d %s %s",
-                g->nodename,
-                g->ip,
-                ntohs(g->port),
-                ntohs(g->cport),
-                ci,
-                sender ? sender->endpoint : "");
-#else
                 serverLog(LL_DEBUG,"GOSSIP %.40s %s:%d@%d %s",
                 g->nodename,
                 g->ip,
                 ntohs(g->port),
                 ntohs(g->cport),
                 ci);
-#endif
             sdsfree(ci);
         }
 
@@ -1457,9 +1427,6 @@ void clusterProcessGossipSection(clusterMsg *hdr, clusterLink *link) {
             {
                 if (node->link) freeClusterLink(node->link);
                 memcpy(node->ip,g->ip,NET_IP_STR_LEN);
-#ifdef BUILD_SSL
-                memcpy(node->endpoint,g->endpoint,DNS_NAME_STR_LEN);
-#endif
                 node->port = ntohs(g->port);
                 node->cport = ntohs(g->cport);
                 node->flags &= ~CLUSTER_NODE_NOADDR;
@@ -1512,9 +1479,6 @@ int nodeUpdateAddressIfNeeded(clusterNode *node, clusterLink *link,
                               clusterMsg *hdr)
 {
     char ip[NET_IP_STR_LEN] = {0};
-#ifdef BUILD_SSL
-    char endpoint[DNS_NAME_STR_LEN] = {0};
-#endif
     int port = ntohs(hdr->port);
     int cport = ntohs(hdr->cport);
 
@@ -1527,32 +1491,18 @@ int nodeUpdateAddressIfNeeded(clusterNode *node, clusterLink *link,
     if (link == node->link) return 0;
     nodeIp2String(ip,link,hdr->myip);
 
-    do {
-#ifdef BUILD_SSL
-        memcpy(endpoint, hdr->endpoint, DNS_NAME_STR_LEN);
-        if (strcmp(endpoint, node->endpoint) != 0) {
-            break;
-        }
-#endif
-        if (node->port == port && node->cport == cport &&
-            strcmp(ip,node->ip) == 0) return 0;
-    } while(0);
+
+    if (node->port == port && node->cport == cport &&
+        strcmp(ip,node->ip) == 0) return 0;
     /* IP / port is different, update it. */
     memcpy(node->ip,ip,sizeof(ip));
-#ifdef BUILD_SSL
-    memcpy(node->endpoint,endpoint,sizeof(endpoint));
-#endif
+
     node->port = port;
     node->cport = cport;
     if (node->link) freeClusterLink(node->link);
     node->flags &= ~CLUSTER_NODE_NOADDR;
-#ifdef BUILD_SSL
-    serverLog(LL_WARNING, "Address updated for node %.40s, now %s:%d %s",
-        node->name, node->ip, node->port, node->endpoint);
-#else
     serverLog(LL_WARNING,"Address updated for node %.40s, now %s:%d",
         node->name, node->ip, node->port);
-#endif
 
 
     /* Check if this is our master and we have to change the
@@ -1835,9 +1785,6 @@ int clusterProcessPacket(clusterLink *link) {
 
             node = createClusterNode(NULL,CLUSTER_NODE_HANDSHAKE);
             nodeIp2String(node->ip,link,hdr->myip);
-#ifdef BUILD_SSL
-            memcpy(node->endpoint, hdr->endpoint, DNS_NAME_STR_LEN);
-#endif
             node->port = ntohs(hdr->port);
             node->cport = ntohs(hdr->cport);
             clusterAddNode(node);
@@ -1900,9 +1847,6 @@ int clusterProcessPacket(clusterLink *link) {
                     link->node->flags);
                 link->node->flags |= CLUSTER_NODE_NOADDR;
                 link->node->ip[0] = '\0';
-#ifdef BUILD_SSL
-                link->node->endpoint[0] = '\0';
-#endif
                 link->node->port = 0;
                 link->node->cport = 0;
                 freeClusterLink(link);
@@ -2346,13 +2290,6 @@ void clusterBuildMessageHdr(clusterMsg *hdr, int type) {
         hdr->myip[NET_IP_STR_LEN-1] = '\0';
     }
 
-#ifdef BUILD_SSL
-    memset(hdr->endpoint,0,DNS_NAME_STR_LEN);
-    if (server.cluster_announce_endpoint) {
-        strncpy(hdr->endpoint,server.cluster_announce_endpoint,DNS_NAME_STR_LEN);
-        hdr->endpoint[DNS_NAME_STR_LEN-1] = '\0';
-    }
-#endif
     /* Handle cluster-announce-port as well. */
     int announced_port = server.cluster_announce_port ?
                          server.cluster_announce_port : server.port;
@@ -3461,12 +3398,6 @@ void clusterCron(void) {
         }
     }
 
-#ifdef BUILD_SSL
-    /* Make cluster announce endpoint in sync with actual endpoint */
-    if (server.cluster_announce_endpoint) {
-        strncpy(myself->endpoint, server.cluster_announce_endpoint, DNS_NAME_STR_LEN);
-    }
-#endif
 
     /* The handshake timeout is the time after which a handshake node that was
      * not turned into a normal node is removed from the nodes. Usually it is
@@ -4108,33 +4039,15 @@ sds representClusterNodeFlags(sds ci, uint16_t flags) {
  * See clusterGenNodesDescription() top comment for more information.
  *
  * The function returns the string representation as an SDS string. */
-sds clusterGenNodeDescription(clusterNode *node, int internalUse) {
-#ifndef BUILD_SSL
-    UNUSED(internalUse);
-#endif
+sds clusterGenNodeDescription(clusterNode *node) {
     int j, start;
     sds ci;
-
-    do {
-#ifdef BUILD_SSL
-        if(internalUse){
-            /* Node coordinates */
-            ci = sdscatprintf(sdsempty(),"%.40s %s:%d@%d,%s ",
-                node->name,
-                node->ip,
-                node->port,
-                node->cport,
-                node->endpoint);
-            break;
-        }
-#endif
-        /* Node coordinates */
-        ci = sdscatprintf(sdsempty(),"%.40s %s:%d@%d ",
-            node->name,
-            getClientEndpointForNode(node),
-            node->port,
-            node->cport);    
-    } while(0);
+    /* Node coordinates */
+    ci = sdscatprintf(sdsempty(),"%.40s %s:%d@%d ",
+        node->name,
+        getClientEndpointForNode(node),
+        node->port,
+        node->cport);    
 
     /* Flags */
     ci = representClusterNodeFlags(ci, node->flags);
@@ -4202,7 +4115,7 @@ sds clusterGenNodeDescription(clusterNode *node, int internalUse) {
  * The representation obtained using this function is used for the output
  * of the CLUSTER NODES function, and as format for the cluster
  * configuration file (nodes.conf) for a given node. */
-sds clusterGenNodesDescription(int filter, int internalUse) {
+sds clusterGenNodesDescription(int filter) {
     sds ci = sdsempty(), ni;
     dictIterator *di;
     dictEntry *de;
@@ -4212,7 +4125,7 @@ sds clusterGenNodesDescription(int filter, int internalUse) {
         clusterNode *node = dictGetVal(de);
 
         if (node->flags & filter) continue;
-        ni = clusterGenNodeDescription(node, internalUse);
+        ni = clusterGenNodeDescription(node);
         ci = sdscatsds(ci,ni);
         sdsfree(ni);
         ci = sdscatlen(ci,"\n",1);
@@ -4391,7 +4304,7 @@ NULL
     } else if (!strcasecmp(c->argv[1]->ptr,"nodes") && c->argc == 2) {
         /* CLUSTER NODES */
         robj *o;
-        sds ci = clusterGenNodesDescription(0, 0);
+        sds ci = clusterGenNodesDescription(0);
 
         o = createObject(OBJ_STRING,ci);
         addReplyBulk(c,o);
@@ -4769,7 +4682,7 @@ NULL
 
         addReplyArrayLen(c,n->numslaves);
         for (j = 0; j < n->numslaves; j++) {
-            sds ni = clusterGenNodeDescription(n->slaves[j], 0);
+            sds ni = clusterGenNodeDescription(n->slaves[j]);
             addReplyBulkCString(c,ni);
             sdsfree(ni);
         }

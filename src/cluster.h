@@ -134,9 +134,6 @@ typedef struct clusterNode {
     mstime_t orphaned_time;     /* Starting time of orphaned master condition */
     long long repl_offset;      /* Last known repl offset for this node. */
     char ip[NET_IP_STR_LEN];  /* Latest known IP address of this node */
-#ifdef BUILD_SSL 
-    char endpoint[DNS_NAME_STR_LEN]; /* Latest known client facing DNS name of this node */
-#endif
     int port;                   /* Latest known clients port of this node */
     int cport;                  /* Latest known cluster port of this node. */
     clusterLink *link;          /* TCP/IP link with this node */
@@ -193,9 +190,6 @@ typedef struct {
     uint32_t ping_sent;
     uint32_t pong_received;
     char ip[NET_IP_STR_LEN];  /* IP address last time it was seen */
-#ifdef BUILD_SSL
-    char endpoint[DNS_NAME_STR_LEN]; /* Latest known client facing DNS name of this node */
-#endif
     uint16_t port;              /* base port last time it was seen */
     uint16_t cport;             /* cluster port last time it was seen */
     uint16_t flags;             /* node->flags copy */
@@ -252,11 +246,7 @@ union clusterMsgData {
         clusterMsgModule msg;
     } module;
 };
-#ifdef BUILD_SSL
-#define CLUSTER_PROTO_VER 1001 /* SSL Cluster bus protocol version. */
-#else
 #define CLUSTER_PROTO_VER 1 /* Cluster bus protocol version. */
-#endif
 typedef struct {
     char sig[4];        /* Signature "RCmb" (Redis Cluster message bus). */
     uint32_t totlen;    /* Total length of this message */
@@ -273,9 +263,6 @@ typedef struct {
     char sender[CLUSTER_NAMELEN]; /* Name of the sender node */
     unsigned char myslots[CLUSTER_SLOTS/8];
     char slaveof[CLUSTER_NAMELEN];
-#ifdef BUILD_SSL
-    char endpoint[DNS_NAME_STR_LEN]; /* Sender ip or DNS name for customer-facing clients, if not all zeroed. */
-#endif
     char myip[NET_IP_STR_LEN];    /* Sender IP, if not all zeroed. */
     char notused1[34];  /* 34 bytes reserved for future usage. */
     uint16_t cport;      /* Sender TCP cluster bus port */
@@ -304,15 +291,5 @@ void clusterClientSetup(clusterLink *link);
 void freeClusterLink(clusterLink *link);
 int parseClusterInterfaceType(char *typeString);
 
-#ifdef BUILD_SSL
-// Exposed so it can be consumed by ssl.h
-#define isEndpointEnabled() (server.client_cluster_interface_type == CLUSTER_INTERFACE_TYPE_DNS)
-
-// Given a cluster node, return the customer-facing endpoint.
-// If DNS is enabled and the node has a DNS endpoint, return it.
-// Otherwise, return the data IP address.
-#define getClientEndpointForNode(node) ((isEndpointEnabled() && (node)->endpoint[0] != '\0') ? (node)->endpoint : (node)->ip)
-#else
 #define getClientEndpointForNode(node) (node)->ip
-#endif
 #endif /* __CLUSTER_H */
