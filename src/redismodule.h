@@ -637,7 +637,7 @@ int REDISMODULE_API_FUNC(RedisModule_KillForkChild)(int child_pid);
 RedisModuleUser *REDISMODULE_API_FUNC(RedisModule_CreateModuleUser)(const char *name);
 void REDISMODULE_API_FUNC(RedisModule_FreeModuleUser)(RedisModuleUser *user);
 int REDISMODULE_API_FUNC(RedisModule_SetModuleUserACL)(RedisModuleUser *user, const char* acl);
-RedisModuleUser *REDISMODULE_API_FUNC(RedisModule_GetACLUser)(RedisModuleUser *user, const char* acl);
+RedisModuleUser *REDISMODULE_API_FUNC(RedisModule_GetACLUser)(const char* name);
 void REDISMODULE_API_FUNC(RedisModule_AuthenticateContextWithUser)(RedisModuleCtx *ctx, RedisModuleUser *user);
 #endif
 
@@ -848,6 +848,7 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(Fork);
     REDISMODULE_GET_API(ExitFromChild);
     REDISMODULE_GET_API(KillForkChild);
+
     REDISMODULE_GET_API(CreateModuleUser);
     REDISMODULE_GET_API(FreeModuleUser);
     REDISMODULE_GET_API(SetModuleUserACL);

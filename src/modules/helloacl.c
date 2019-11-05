@@ -37,6 +37,8 @@
 #include <ctype.h>
 #include <string.h>
 #include <strings.h>
+#include <pthread.h>
+#include <unistd.h>
 
 // A simple global user
 static RedisModuleUser *global;
@@ -55,14 +57,76 @@ int ResetCommand_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
     return RedisModule_ReplyWithSimpleString(ctx, "OK");
 }
 
-/* HELLOACL.AUTH */
-int AuthCommand_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+/* HELLOACL.AUTHGLOBAL */
+int AuthGlobalCommand_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
 
     RedisModule_AuthenticateContextWithUser(ctx, global);
 
     return RedisModule_ReplyWithSimpleString(ctx, "OK");
+}
+
+#define TIMEOUT_TIME 1000
+
+/* Reply callback for auth command HELLO.AUTHASYNC */
+int HelloACL_Reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+
+    RedisModuleString *user_string = RedisModule_GetBlockedClientPrivateData(ctx);
+    RedisModuleUser *user = RedisModule_GetACLUser(RedisModule_StringPtrLen(user_string, NULL));
+    if (!user) {
+        return RedisModule_ReplyWithError(ctx, "Invalid Username or password");    
+    }
+
+    RedisModule_AuthenticateContextWithUser(ctx, user);
+    return RedisModule_ReplyWithSimpleString(ctx, "OK");
+}
+
+/* Timeout callback for auth command HELLO.AUTHASYNC */
+int HelloACL_Timeout(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    return RedisModule_ReplyWithSimpleString(ctx, "Request timedout");
+}
+
+/* Private data freeing data for HELLO.AUTHASYNC command. */
+void HelloACL_FreeData(RedisModuleCtx *ctx, void *privdata) {
+    REDISMODULE_NOT_USED(ctx);
+    RedisModule_FreeString(NULL, privdata);
+}
+
+/* This thread is presumably doing some background work to authenticate
+ * the client like calling some remote server. */
+void *HelloACL_ThreadMain(void *args) {
+    void **targs = args;
+    RedisModuleBlockedClient *bc = targs[0];
+    RedisModuleString *user = targs[1];
+    RedisModule_Free(targs);
+
+    RedisModule_UnblockClient(bc,user);
+    return NULL;
+}
+
+/* HELLOACL.AUTHASYNC */
+int AuthAsyncCommand_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    if (argc != 2) return RedisModule_WrongArity(ctx);
+
+    pthread_t tid;
+    RedisModuleBlockedClient *bc = RedisModule_BlockClient(ctx, HelloACL_Reply, HelloACL_Timeout, HelloACL_FreeData, TIMEOUT_TIME);
+    
+
+    void **targs = RedisModule_Alloc(sizeof(void*)*2);
+    targs[0] = bc;
+    targs[1] = RedisModule_CreateStringFromString(NULL, argv[1]);
+
+    if (pthread_create(&tid,NULL,HelloACL_ThreadMain,targs) != 0) {
+        RedisModule_AbortBlock(bc);
+        return RedisModule_ReplyWithError(ctx,"-ERR Can't start thread");
+    }
+
+    return REDISMODULE_OK;
 }
 
 /* This function must be present on each Redis module. It is used in order to
@@ -75,11 +139,15 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
         == REDISMODULE_ERR) return REDISMODULE_ERR;
 
     if (RedisModule_CreateCommand(ctx,"helloacl.reset",
-        ResetCommand_RedisCommand,"readonly",0,0,0) == REDISMODULE_ERR)
+        ResetCommand_RedisCommand,"",0,0,0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
 
-    if (RedisModule_CreateCommand(ctx,"helloacl.auth",
-        AuthCommand_RedisCommand,"readonly",0,0,0) == REDISMODULE_ERR)
+    if (RedisModule_CreateCommand(ctx,"helloacl.authasync",
+        AuthAsyncCommand_RedisCommand,"no-auth",0,0,0) == REDISMODULE_ERR)
+        return REDISMODULE_ERR;
+
+    if (RedisModule_CreateCommand(ctx,"helloacl.authglobal",
+        AuthGlobalCommand_RedisCommand,"no-auth",0,0,0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
 
     global = RedisModule_CreateModuleUser("global");

@@ -716,6 +716,7 @@ int commandFlagsFromString(char *s) {
         else if (!strcasecmp(t,"allow-stale")) flags |= CMD_STALE;
         else if (!strcasecmp(t,"no-monitor")) flags |= CMD_SKIP_MONITOR;
         else if (!strcasecmp(t,"fast")) flags |= CMD_FAST;
+        else if (!strcasecmp(t,"no-auth")) flags |= CMD_NO_AUTH;
         else if (!strcasecmp(t,"getkeys-api")) flags |= CMD_MODULE_GETKEYS;
         else if (!strcasecmp(t,"no-cluster")) flags |= CMD_MODULE_NO_CLUSTER;
         else break;
@@ -777,6 +778,9 @@ int commandFlagsFromString(char *s) {
  *                     example, is unable to report the position of the
  *                     keys, programmatically creates key names, or any
  *                     other reason.
+ * * **"no-auth"**:    This command can be run by an un-authenticated client.
+ *                     Normally this is used by a command that is used
+ *                     to authenticate a client. 
  */
 int RM_CreateCommand(RedisModuleCtx *ctx, const char *name, RedisModuleCmdFunc cmdfunc, const char *strflags, int firstkey, int lastkey, int keystep) {
     int flags = strflags ? commandFlagsFromString((char*)strflags) : 0;
@@ -5117,7 +5121,20 @@ int RM_GetTimerInfo(RedisModuleCtx *ctx, RedisModuleTimerID id, uint64_t *remain
  * Modules ACL API
  *
  * Implements a hook into the authentication and authorization within Redis. 
- * --------------------------------------------------------------------------*/
+ * --------------------------------------------------------------------------*/0
+static RedisModuleUser *getModuleUserFromACLUser(user *acl_user) {
+    if (!acl_user) {
+        return NULL;
+    }
+
+    if (!acl_user->module_reference) {
+        RedisModuleUser *module_user = zmalloc(sizeof(RedisModuleUser));
+        module_user->user = acl_user;
+        acl_user->module_reference = module_user;
+    }
+
+    return acl_user;
+}
 
 /* Creates a new user that is unlinked from the main ACL user dictionary. These
  * users behave the same way as those in ACL.c except for a few minor 
@@ -5164,18 +5181,9 @@ int RM_SetModuleUserACL(RedisModuleUser *user, const char* acl) {
  * is no user with the given name.  */
 RedisModuleUser *RM_GetACLUser(char* name) {
     user *acl_user = ACLGetUserByName(name, sdslen(name));
-    if (!acl_user) {
-        return NULL;
-    }
-
-    if (!acl_user->module_reference) {
-        RedisModuleUser *module_user = zmalloc(sizeof(RedisModuleUser));
-        module_user->user = acl_user;
-        acl_user->module_reference = module_user;
-    }
-
-    return acl_user->module_reference;
+    return getModuleUserFromACLUser(acl_user);
 }
+
 /* Authenticate the client associated with the current context with
  * the provided user. */
 int RM_AuthenticateContextWithUser(RedisModuleCtx *ctx, RedisModuleUser *auth_user) {
