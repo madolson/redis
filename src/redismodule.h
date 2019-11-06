@@ -637,8 +637,8 @@ int REDISMODULE_API_FUNC(RedisModule_KillForkChild)(int child_pid);
 RedisModuleUser *REDISMODULE_API_FUNC(RedisModule_CreateModuleUser)(const char *name);
 void REDISMODULE_API_FUNC(RedisModule_FreeModuleUser)(RedisModuleUser *user);
 int REDISMODULE_API_FUNC(RedisModule_SetModuleUserACL)(RedisModuleUser *user, const char* acl);
-RedisModuleUser *REDISMODULE_API_FUNC(RedisModule_GetACLUser)(const char* name);
-void REDISMODULE_API_FUNC(RedisModule_AuthenticateContextWithUser)(RedisModuleCtx *ctx, RedisModuleUser *user);
+RedisModuleUser *REDISMODULE_API_FUNC(RedisModule_GetACLUser)(const char* name, size_t len);
+void REDISMODULE_API_FUNC(RedisModule_AuthenticateClientWithUser)(RedisModuleCtx *ctx, RedisModuleUser *user);
 #endif
 
 #define RedisModule_IsAOFClient(id) ((id) == UINT64_MAX)
@@ -853,7 +853,7 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(FreeModuleUser);
     REDISMODULE_GET_API(SetModuleUserACL);
     REDISMODULE_GET_API(GetACLUser);
-    REDISMODULE_GET_API(AuthenticateContextWithUser);
+    REDISMODULE_GET_API(AuthenticateClientWithUser);
 #endif
 
     if (RedisModule_IsModuleNameBusy && RedisModule_IsModuleNameBusy(name)) return REDISMODULE_ERR;

@@ -5121,7 +5121,7 @@ int RM_GetTimerInfo(RedisModuleCtx *ctx, RedisModuleTimerID id, uint64_t *remain
  * Modules ACL API
  *
  * Implements a hook into the authentication and authorization within Redis. 
- * --------------------------------------------------------------------------*/0
+ * --------------------------------------------------------------------------*/
 static RedisModuleUser *getModuleUserFromACLUser(user *acl_user) {
     if (!acl_user) {
         return NULL;
@@ -5133,7 +5133,7 @@ static RedisModuleUser *getModuleUserFromACLUser(user *acl_user) {
         acl_user->module_reference = module_user;
     }
 
-    return acl_user;
+    return acl_user->module_reference;
 }
 
 /* Creates a new user that is unlinked from the main ACL user dictionary. These
@@ -5177,16 +5177,25 @@ int RM_SetModuleUserACL(RedisModuleUser *user, const char* acl) {
 
 /* Get's a real ACL User with the corresponding name. This user can
  * be manipulated by the SetUserACL API and attached to a user by
- * calling the AuthenticateContextWithUser. Returns NULL if there
- * is no user with the given name.  */
-RedisModuleUser *RM_GetACLUser(char* name) {
-    user *acl_user = ACLGetUserByName(name, sdslen(name));
+ * calling the AuthenticateClientWithUser. Returns NULL if there
+ * is no user with the given name. */
+RedisModuleUser *RM_GetACLUser(char* name, size_t len) {
+    user *acl_user = ACLGetUserByName(name, len);
     return getModuleUserFromACLUser(acl_user);
 }
 
 /* Authenticate the client associated with the current context with
  * the provided user. */
-int RM_AuthenticateContextWithUser(RedisModuleCtx *ctx, RedisModuleUser *auth_user) {
+RedisModuleUser *RM_GetUser(RedisModuleCtx *ctx, RedisModuleUser *auth_user) {
+    if (ctx->client && ctx->client->user) {
+        return getModuleUserFromACLUser(ctx->client->user);
+    }
+    return NULL;
+}
+
+/* Authenticate the client associated with the current context with
+ * the provided user. */
+int RM_AuthenticateClientWithUser(RedisModuleCtx *ctx, RedisModuleUser *auth_user) {
     ctx->client->user = auth_user->user;
     ctx->client->authenticated = 1;
     return REDISMODULE_OK;
@@ -7058,5 +7067,5 @@ void moduleRegisterCoreAPI(void) {
     REGISTER_API(SetModuleUserACL);
     REGISTER_API(FreeModuleUser);
     REGISTER_API(GetACLUser);
-    REGISTER_API(AuthenticateContextWithUser);
+    REGISTER_API(AuthenticateClientWithUser);
 }

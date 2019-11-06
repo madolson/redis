@@ -62,7 +62,7 @@ int AuthGlobalCommand_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
 
-    RedisModule_AuthenticateContextWithUser(ctx, global);
+    RedisModule_AuthenticateClientWithUser(ctx, global);
 
     return RedisModule_ReplyWithSimpleString(ctx, "OK");
 }
@@ -73,14 +73,17 @@ int AuthGlobalCommand_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv
 int HelloACL_Reply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
+    size_t length;
 
     RedisModuleString *user_string = RedisModule_GetBlockedClientPrivateData(ctx);
-    RedisModuleUser *user = RedisModule_GetACLUser(RedisModule_StringPtrLen(user_string, NULL));
+    const char *name = RedisModule_StringPtrLen(user_string, &length);
+
+    RedisModuleUser *user = RedisModule_GetACLUser(name, length);
     if (!user) {
         return RedisModule_ReplyWithError(ctx, "Invalid Username or password");    
     }
 
-    RedisModule_AuthenticateContextWithUser(ctx, user);
+    RedisModule_AuthenticateClientWithUser(ctx, user);
     return RedisModule_ReplyWithSimpleString(ctx, "OK");
 }
 
