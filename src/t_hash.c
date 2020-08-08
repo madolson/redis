@@ -454,8 +454,7 @@ robj *hashTypeLookupWriteOrCreate(client *c, robj *key) {
         o = createHashObject();
         dbAdd(c->db,key,o);
     } else {
-        if (o->type != OBJ_HASH) {
-            addReply(c,shared.wrongtypeerr);
+        if (checkType(c,o,OBJ_HASH)) {
             return NULL;
         }
     }
@@ -692,8 +691,7 @@ void hmgetCommand(client *c) {
     /* Don't abort when the key cannot be found. Non-existing keys are empty
      * hashes, where HMGET should respond with a series of null bulks. */
     o = lookupKeyRead(c->db, c->argv[1]);
-    if (o != NULL && o->type != OBJ_HASH) {
-        addReply(c, shared.wrongtypeerr);
+    if (o != NULL && checkType(c,o,OBJ_HASH)) {
         return;
     }
 

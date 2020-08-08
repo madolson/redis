@@ -1062,8 +1062,7 @@ robj *streamTypeLookupWriteOrCreate(client *c, robj *key) {
         o = createStreamObject();
         dbAdd(c->db,key,o);
     } else {
-        if (o->type != OBJ_STREAM) {
-            addReply(c,shared.wrongtypeerr);
+        if (checkType(c,o,OBJ_STREAM)) {
             return NULL;
         }
     }

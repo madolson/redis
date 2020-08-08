@@ -198,8 +198,7 @@ void pushGenericCommand(client *c, int where) {
     int j, pushed = 0;
     robj *lobj = lookupKeyWrite(c->db,c->argv[1]);
 
-    if (lobj && lobj->type != OBJ_LIST) {
-        addReply(c,shared.wrongtypeerr);
+    if (lobj && checkType(c,lobj,OBJ_LIST)) {
         return;
     }
 
@@ -694,8 +693,7 @@ void blockingPopGenericCommand(client *c, int where) {
     for (j = 1; j < c->argc-1; j++) {
         o = lookupKeyWrite(c->db,c->argv[j]);
         if (o != NULL) {
-            if (o->type != OBJ_LIST) {
-                addReply(c,shared.wrongtypeerr);
+            if (checkType(c,o,OBJ_LIST)) {
                 return;
             } else {
                 if (listTypeLength(o) != 0) {
@@ -765,13 +763,13 @@ void brpoplpushCommand(client *c) {
             blockForKeys(c,BLOCKED_LIST,c->argv + 1,1,timeout,c->argv[2],NULL);
         }
     } else {
-        if (key->type != OBJ_LIST) {
-            addReply(c, shared.wrongtypeerr);
-        } else {
-            /* The list exists and has elements, so
-             * the regular rpoplpushCommand is executed. */
-            serverAssertWithInfo(c,key,listTypeLength(key) > 0);
-            rpoplpushCommand(c);
+        if (checkType(c,key,OBJ_LIST)) {
+            return
+        }
+        /* The list exists and has elements, so
+         * the regular rpoplpushCommand is executed. */
+        serverAssertWithInfo(c,key,listTypeLength(key) > 0);
+        rpoplpushCommand(c);
         }
     }
 }
