@@ -4,7 +4,7 @@ member and once the report has been reviewed you will receive a more detailed
 response including next steps.
 
 If you do not receive a reply you can escalate to the Redis Google Group,
-linked above. Because this group is a public space please do not disclose the
+found in (CONTRIBUTING). Because this group is a public space please do not disclose the
 issue in detail, only say that you are trying to reach the core team for a
 security issue.
 
