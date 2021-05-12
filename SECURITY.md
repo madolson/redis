@@ -1,4 +1,4 @@
-*If you are reporting a security bug*, please contact the core team privately
+If you are reporting a security bug, please contact the core team privately
 by emailing redis@redis.io. Your report will be acknowledged by a core team
 member and once the report has been reviewed you will receive a more detailed
 response including next steps.

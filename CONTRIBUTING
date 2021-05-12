@@ -24,7 +24,7 @@ Issues and pull requests for documentation belong on the redis-doc repo:
 
     https://github.com/redis/redis-doc
 
-For security issues see SECURITY.md.
+If you are reporting a security bug, follow (SECURITY.md).
 
 # How to provide a patch for a new feature
 
