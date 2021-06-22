@@ -35,6 +35,7 @@
 #include "../redismodule.h"
 #include <pthread.h>
 #include <unistd.h>
+#include <strings.h>
 
 // A simple global user
 static RedisModuleUser *global;
@@ -141,7 +142,6 @@ int AuthAsyncCommand_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv,
 
     pthread_t tid;
     RedisModuleBlockedClient *bc = RedisModule_BlockClient(ctx, HelloACL_Reply, HelloACL_Timeout, HelloACL_FreeData, TIMEOUT_TIME);
-    
 
     void **targs = RedisModule_Alloc(sizeof(void*)*2);
     targs[0] = bc;
@@ -153,6 +153,20 @@ int AuthAsyncCommand_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv,
     }
 
     return REDISMODULE_OK;
+}
+
+/* Example of overriding the default auth command with a new custom auth
+ * command .*/
+void AuthAsyncCommand_AuthOverride(RedisModuleCommandFilterCtx *fctx) {
+    size_t cmd_len;
+    const RedisModuleString *arg0 = RedisModule_CommandFilterArgGet(fctx, 0);
+    const char *cmd_string = RedisModule_StringPtrLen(arg0, &cmd_len);
+
+    if (!strncasecmp("auth", cmd_string, cmd_len)) {
+        RedisModuleString *str = RedisModule_CreateString(NULL, 
+            "HELLOACL.AUTHASYNC", 18);
+        RedisModule_CommandFilterArgReplace(fctx, 0, str);
+    }
 }
 
 /* This function must be present on each Redis module. It is used in order to
@@ -179,6 +193,8 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) 
     if (RedisModule_CreateCommand(ctx,"helloacl.authasync",
         AuthAsyncCommand_RedisCommand,"no-auth",0,0,0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
+
+    RedisModule_RegisterCommandFilter(ctx, AuthAsyncCommand_AuthOverride, 0);
 
     global = RedisModule_CreateModuleUser("global");
     RedisModule_SetModuleUserACL(global, "allcommands");
